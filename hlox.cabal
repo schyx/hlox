@@ -26,6 +26,8 @@ source-repository head
 library
   exposed-modules:
       Lib
+      Phases.Scanner
+      Token
   other-modules:
       Paths_hlox
   autogen-modules:
