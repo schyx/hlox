@@ -1,19 +1,20 @@
-module Token
-  ( TokenType,
-    Literal,
-    Token,
+module Tokens
+  ( TokenType(..),
+    Literal(..),
+    Token(..),
   )
 where
 
-data Literal = Number Double | Str String | Identifier String | None deriving (Eq, Show)
+data Literal = Number Double | Str String | Identifier String | None deriving (Eq, Ord, Show)
 
-data Token = Token
+data Token = MkToken
   { tokenType :: TokenType,
     lexeme :: String,
     literal :: Literal,
-    line :: Int
+    line :: Int,
+    offset :: Int
   }
-  deriving (Eq, Show)
+  deriving (Eq, Ord, Show)
 
 data TokenType
   = LEFT_PAREN
@@ -58,4 +59,4 @@ data TokenType
   | VAR
   | WHILE
   | EOF
-  deriving (Show, Eq)
+  deriving (Eq, Ord, Show)

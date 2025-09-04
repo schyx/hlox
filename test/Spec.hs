@@ -1,2 +1,8 @@
+import Test.HUnit
+
+import ScannerTests
+
 main :: IO ()
-main = putStrLn "Test suite not yet implemented"
+main = do
+  _ <- runTestTT scannerTests
+  return ()

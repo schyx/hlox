@@ -1,7 +1,9 @@
-module Phases.Scanner (scanTokens) where
+module Phases.Scanner (scanTokens, ScanResult) where
 
-import Token
+import Tokens
+
+type ScanResult = Either [String] [Token]
 
 -- | Implements scanning phase of the interpreter
-scanTokens :: String -> [Token]
-scanTokens _ = []
+scanTokens :: String -> ScanResult
+scanTokens _ = Right []
