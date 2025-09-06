@@ -38,7 +38,7 @@ run contents = do
   let tokens = scanTokens contents
   case tokens of
     Right tokes -> mapM_ (putStrLn . toTestOutput) tokes
-    Left errs -> pure ()
+    Left errs -> mapM_ putStrLn errs
 
 toTestOutput :: Token -> String
 toTestOutput token = show (tokenType token) ++ " " ++ lexeme token ++ " " ++ l
