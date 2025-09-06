@@ -26,10 +26,10 @@ data TokenType
   | MINUS
   | PLUS
   | SEMICOLON
-  | SLASH
   | STAR
-  | BANG
   -- Two char tokens
+  | SLASH
+  | BANG
   | BANG_EQUAL
   | EQUAL
   | EQUAL_EQUAL
