@@ -4,6 +4,7 @@ import Phases.Scanner
 import System.Environment
 import System.Exit
 import System.IO
+import Tokens
 
 main :: IO ()
 main = do
@@ -35,4 +36,17 @@ runFile filepath = do
 run :: String -> IO ()
 run contents = do
   let tokens = scanTokens contents
-  print tokens
+  case tokens of
+    Right tokes -> mapM_ (putStrLn . toTestOutput) tokes
+    Left errs -> pure ()
+
+toTestOutput :: Token -> String
+toTestOutput token = show (tokenType token) ++ " " ++ lexeme token ++ " " ++ l
+  where
+    l
+      | None <- lit = "null"
+      | Number n <- lit = show n
+      | Str s <- lit = s
+      | Identifier _ <- lit = "null"
+    lit = literal token
+

@@ -91,7 +91,7 @@ scanHelper (c : rest) currentLine currentOffset currentTokens
             Right (token, leftovers, newLine, newOffset) ->
               scanHelper leftovers newLine newOffset $ addToResult currentTokens $ Right token
   -- identifiers
-  | isAlpha c =
+  | isAlpha c || c == '_' =
       let (token, leftovers, identifierLength) = scanIdentifier c currentLine currentOffset rest
        in scanHelper leftovers currentLine (currentOffset + identifierLength) $
             addToResult currentTokens $
@@ -122,21 +122,20 @@ scanString rest startLine startOffset = helper [] rest startLine $ startOffset +
                   offset = startOffset,
                   literal = Str str,
                   line = startLine,
-                  lexeme = str
+                  lexeme = "\"" ++ str ++ "\""
                 },
               leftovers,
               helperLine,
               helperOffset
             )
 
--- TODO: refactor to remove the `len` argument (can use length of buildup instead)
 scanIdentifier :: Char -> Int -> Int -> String -> (Token, String, Int)
 scanIdentifier c identifierLine identifierOffset = helper [c]
   where
     helper :: String -> String -> (Token, String, Int)
     helper buildup [] = getReturn buildup []
     helper buildup (currentChar : leftovers) =
-      if isAlphaNum currentChar
+      if isAlphaNum currentChar || currentChar == '_'
         then helper (currentChar : buildup) leftovers
         else getReturn buildup (currentChar : leftovers)
     getReturn buildup leftovers =
@@ -190,7 +189,10 @@ scanNumber c = helper [c] False
     helper :: String -> Bool -> String -> (Double, String, Int, String)
     helper buildup _ [] = getReturn buildup []
     helper buildup True ('.' : leftovers) = getReturn buildup ('.' : leftovers)
-    helper buildup False ('.' : leftovers) = helper ('.' : buildup) True leftovers
+    helper buildup False ['.'] = getReturn buildup ['.']
+    helper buildup False ('.' : c2 : leftovers) 
+      | isDigit c2 = helper ('.' : buildup) True (c2 : leftovers)
+      | otherwise = getReturn buildup ('.' : leftovers)
     helper buildup seenDot (currentChar : leftovers) =
       if isDigit currentChar
         then helper (currentChar : buildup) seenDot leftovers
@@ -210,7 +212,7 @@ addPotentialTwoCharToken c rest
     singleToken char =
       case Map.lookup char table of
         Nothing -> error "bruh"
-        Just constructor -> (constructor, [], 1, [char])
+        Just constructor -> (constructor, rest, 1, [char])
 
 removeUntilNewline :: String -> String
 removeUntilNewline [] = []

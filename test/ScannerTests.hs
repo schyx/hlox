@@ -53,7 +53,7 @@ testMultiCharacter = TestCase $ do
   assertEqual
     "test multiCharacter"
     ( Right
-        [ MkToken {tokenType = STRING, lexeme = "hello, world!", literal = Str "hello, world!", line = 1, offset = 1},
+        [ MkToken {tokenType = STRING, lexeme = "\"hello, world!\"", literal = Str "hello, world!", line = 1, offset = 1},
           MkToken {tokenType = IDENTIFIER, lexeme = "hello", literal = Identifier "hello", line = 2, offset = 1},
           MkToken {tokenType = NUMBER, lexeme = "123.456", literal = Number 123.456, line = 3, offset = 1},
           MkToken {tokenType = EOF, offset = 1, literal = None, line = 4, lexeme = ""}
@@ -89,7 +89,7 @@ testMix = TestCase $ do
           MkToken {tokenType = IDENTIFIER, offset = 5, literal = Identifier "andy", line = 2, lexeme = "andy"},
           MkToken {tokenType = SEMICOLON, offset = 9, literal = None, line = 2, lexeme = ";"},
           MkToken {tokenType = PRINT, offset = 1, literal = None, line = 3, lexeme = "print"},
-          MkToken {tokenType = STRING, offset = 7, literal = Str "hello", line = 3, lexeme = "hello"},
+          MkToken {tokenType = STRING, offset = 7, literal = Str "hello", line = 3, lexeme = "\"hello\""},
           MkToken {tokenType = SEMICOLON, offset = 14, literal = None, line = 3, lexeme = ";"},
           MkToken {tokenType = EOF, offset = 1, literal = None, line = 4, lexeme = ""}
         ]
