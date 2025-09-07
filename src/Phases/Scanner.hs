@@ -57,6 +57,11 @@ scanHelper (c : rest) currentLine currentOffset currentTokens
   | c == '/' = case rest of
       '/' : _ ->
         scanHelper (removeUntilNewline rest) (currentLine + 1) 1 currentTokens
+      '*' : _ ->
+        let output = scanBlockComment (c : rest) currentLine currentOffset
+         in case output of
+              Right (newLine, newOffset, leftovers) -> scanHelper leftovers newLine newOffset currentTokens
+              Left err -> addToResult currentTokens $ Left err
       _ ->
         scanHelper rest currentLine (currentOffset + 1) $
           addToResult currentTokens $
@@ -102,6 +107,22 @@ scanHelper (c : rest) currentLine currentOffset currentTokens
         addToResult currentTokens $
           Left $
             report currentLine "" "Unexpected character."
+
+scanBlockComment :: String -> Int -> Int -> Either String (Int, Int, String)
+scanBlockComment rest currentLine currentOffset = helper rest currentLine currentOffset 0
+  where
+    helper :: String -> Int -> Int -> Int -> Either String (Int, Int, String)
+    helper ('/' : '*' : leftovers) helperLine helperOffset numOpening =
+      helper leftovers helperLine (helperOffset + 2) (numOpening + 1)
+    helper ('*' : '/' : leftovers) helperLine helperOffset numOpening =
+      if numOpening == 1
+        then Right (helperLine, helperOffset + 2, leftovers)
+        else helper leftovers helperLine (helperOffset + 2) (numOpening - 1)
+    helper ('\n' : c : leftovers) helperLine _ numOpening =
+      helper (c : leftovers) (helperLine + 1) 1 numOpening
+    helper (_ : c : leftovers) helperLine helperOffset numOpening =
+      helper (c : leftovers) helperLine (helperOffset + 1) numOpening
+    helper _ helperLine _ _ = Left $ report helperLine "" "Unterminated block comment."
 
 scanString :: String -> Int -> Int -> Either String (Token, String, Int, Int)
 scanString rest startLine startOffset = helper [] rest startLine $ startOffset + 1
@@ -190,7 +211,7 @@ scanNumber c = helper [c] False
     helper buildup _ [] = getReturn buildup []
     helper buildup True ('.' : leftovers) = getReturn buildup ('.' : leftovers)
     helper buildup False ['.'] = getReturn buildup ['.']
-    helper buildup False ('.' : c2 : leftovers) 
+    helper buildup False ('.' : c2 : leftovers)
       | isDigit c2 = helper ('.' : buildup) True (c2 : leftovers)
       | otherwise = getReturn buildup ('.' : leftovers)
     helper buildup seenDot (currentChar : leftovers) =
