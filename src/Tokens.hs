@@ -5,7 +5,7 @@ module Tokens
   )
 where
 
-data Literal = Number Double | Str String | Identifier String | None deriving (Eq, Ord, Show)
+data Literal = Number Double | Str String | Identifier String | Nil | None deriving (Eq, Ord, Show)
 
 data Token = MkToken
   { tokenType :: TokenType,

@@ -173,6 +173,17 @@ scanIdentifier c identifierLine identifierOffset = helper [c]
                 leftovers,
                 length buildup
               )
+            Just NIL ->
+              ( MkToken
+                  { tokenType = NIL,
+                    offset = identifierOffset,
+                    literal = Nil,
+                    line = identifierLine,
+                    lexeme = identifier
+                  },
+                leftovers,
+                length buildup
+              )
             Just ttype ->
               ( MkToken
                   { tokenType = ttype,
