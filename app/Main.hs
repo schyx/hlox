@@ -1,5 +1,6 @@
 module Main (main) where
 
+import Phases.Parser
 import Phases.Scanner
 import System.Environment
 import System.Exit
@@ -37,7 +38,7 @@ run :: String -> IO ()
 run contents = do
   let tokens = scanTokens contents
   case tokens of
-    Right tokes -> mapM_ (putStrLn . toTestOutput) tokes
+    Right tokes -> print $ parse tokes
     Left errs -> mapM_ putStrLn errs
 
 toTestOutput :: Token -> String

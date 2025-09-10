@@ -27,6 +27,8 @@ library
   exposed-modules:
       Error
       Lib
+      Phases.Expr
+      Phases.Parser
       Phases.Scanner
       Tokens
       Utils
