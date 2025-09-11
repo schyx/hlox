@@ -28,6 +28,7 @@ library
       Error
       Lib
       Phases.Expr
+      Phases.Interpreter
       Phases.Parser
       Phases.Scanner
       Tokens
