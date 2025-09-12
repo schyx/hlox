@@ -1,15 +1,33 @@
-module Phases.Interpreter (interpret, InterpretResult) where
+module Phases.Interpreter (interpret, mkInterpreter, InterpreterOutput, ToPrint(..), Interpreter) where
 
-import Phases.Expr
-import Tokens
 import Error
+import Phases.Expr
+import Phases.Stmt
+import Tokens
 
-type InterpretResult = Either String Literal
+data ToPrint = Zilch | Literal Literal
 
-interpret :: Expr -> InterpretResult
-interpret (Binary left operator right) = do
-  leftLiteral <- interpret left
-  rightLiteral <- interpret right
+type InterpreterOutput = Either String ToPrint
+
+type InterpretExprResult = Either String Literal
+
+data Interpreter = MkInterpreter
+
+mkInterpreter :: Interpreter
+mkInterpreter = MkInterpreter
+
+interpret :: Interpreter -> Stmt -> (Interpreter, InterpreterOutput)
+interpret interp (Print expr) = case interpretExpr expr of
+  Left err -> (interp, Left err)
+  Right lit -> (interp, Right $ Literal lit)
+interpret interp (Expression expr) = case interpretExpr expr of
+  Left err -> (interp, Left err)
+  Right _ -> (interp, Right Zilch)
+
+interpretExpr :: Expr -> InterpretExprResult
+interpretExpr (Binary left operator right) = do
+  leftLiteral <- interpretExpr left
+  rightLiteral <- interpretExpr right
   let opType = tokenType operator
   case opType of
     EQUAL_EQUAL -> Right $ Boolean $ leftLiteral == rightLiteral
@@ -43,8 +61,8 @@ interpret (Binary left operator right) = do
         (Str lefts, Str rights) -> Right $ Str $ lefts ++ rights
         _ -> Left $ runtimeError operator "Operands must be two numbers or two strings."
     _ -> error "unexpected opType when interpreting Binary"
-interpret (Unary operator expr) = do
-  lit <- interpret expr
+interpretExpr (Unary operator expr) = do
+  lit <- interpretExpr expr
   let opType = tokenType operator
   case opType of
     BANG -> Right $ Boolean $ not $ isTruthy lit
@@ -52,8 +70,8 @@ interpret (Unary operator expr) = do
       n <- toNumber lit operator
       Right $ Number $ -n
     _ -> error "unexpected opType when interpreting unary"
-interpret (Grouping expr) = interpret expr
-interpret (Primary lit) = Right lit
+interpretExpr (Grouping expr) = interpretExpr expr
+interpretExpr (Primary lit) = Right lit
 
 toNumberPair :: Literal -> Literal -> Token -> Either String (Double, Double)
 toNumberPair left right op = do

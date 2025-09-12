@@ -31,6 +31,7 @@ library
       Phases.Interpreter
       Phases.Parser
       Phases.Scanner
+      Phases.Stmt
       Tokens
       Utils
   other-modules:

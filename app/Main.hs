@@ -3,6 +3,7 @@ module Main (main) where
 import Phases.Interpreter
 import Phases.Parser
 import Phases.Scanner
+import Phases.Stmt
 import System.Environment
 import System.Exit
 import System.IO
@@ -40,11 +41,20 @@ run contents = do
   let scanResult = scanTokens contents
   case scanResult of
     Right tokens -> case parse tokens of
-      Right expr -> case interpret expr of
-        Right lit -> putStrLn $ printLiteral lit
-        Left err -> putStrLn err
+      Right stmts -> runInterp mkInterpreter stmts
       Left errs -> mapM_ putStrLn errs
     Left errs -> mapM_ putStrLn errs
+  where
+    runInterp :: Interpreter -> [Stmt] -> IO ()
+    runInterp _ [] = return ()
+    runInterp interp (s : rest) =
+      let (newInterpreter, interpOutput) = interpret interp s
+        in case interpOutput of
+          Right Zilch -> runInterp newInterpreter rest
+          Right (Literal l) -> do
+            putStrLn $ printLiteral l
+            runInterp newInterpreter rest
+          Left err -> putStrLn err
 
 toTestOutput :: Token -> String
 toTestOutput token = show (tokenType token) ++ " " ++ lexeme token ++ " " ++ l
