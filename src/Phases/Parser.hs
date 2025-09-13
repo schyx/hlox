@@ -18,22 +18,56 @@ parse input = case parseHelper input $ Right [] of
   where
     parseHelper :: [Token] -> ParseResult -> ParseResult
     parseHelper tokens result =
-      let ((output, leftovers), shouldContinue) = statement tokens
+      let ((output, leftovers), shouldContinue) = declaration tokens
        in if shouldContinue
             then parseHelper leftovers $ addToResult result output
             else result
 
-statement :: [Token] -> (ParseStatementResult, Bool)
-statement (t : rest)
+declaration :: [Token] -> (ParseStatementResult, Bool)
+declaration (t : rest)
   | ttype == EOF = ((Left "", []), False)
-  | ttype == PRINT = (printStatement $ t : rest, True)
-  | otherwise = (expressionStatement $ t : rest, True)
+  | ttype == VAR = (varDeclarationStatement $ t : rest, True)
+  | otherwise = (statement (t : rest), True)
   where
     ttype = tokenType t
-statement [] = error "Should have at least EOF in statement"
+declaration _ = error "should at least have EOF in declaration"
 
 expression :: [Token] -> ParseExpressionResult
 expression = equality
+
+varDeclarationStatement :: [Token] -> ParseStatementResult
+varDeclarationStatement (_ : t1 : afterIdentifier)
+  | tokenType t1 == IDENTIFIER =
+      case afterIdentifier of
+        t2 : afterEqual -> case tokenType t2 of
+          EQUAL -> case expression afterEqual of
+            (Left err, leftovers) -> (Left err, leftovers)
+            (Right expr, l1 : leftovers) ->
+              if tokenType l1 == SEMICOLON
+                then (Right $ Var t1 expr, leftovers)
+                else
+                  ( Left $ parseError l1 "Expect ';' after variable declaration.",
+                    synchronize $ l1 : leftovers
+                  )
+            _ -> error "Should at least have EOF in varDeclarationStatement"
+          SEMICOLON -> (Right $ Var t1 (Primary Nil), afterEqual)
+          _ ->
+            ( Left $ parseError t2 "Expect ';' after variable declaration.",
+              synchronize $ t2 : afterEqual
+            )
+        _ -> error "Should at least have EOF in varDeclarationStatement 2"
+  | otherwise = (Left $ parseError t1 "Expect variable name.", synchronize $ t1 : afterIdentifier)
+varDeclarationStatement [t] = (Left $ parseError t "Expect variable name.", [t])
+varDeclarationStatement _ = error "should at least have EOF in varDeclarationStatement 3"
+
+statement :: [Token] -> ParseStatementResult
+statement (t : rest)
+  | ttype == EOF = (Left "", [])
+  | ttype == PRINT = printStatement $ t : rest
+  | otherwise = expressionStatement $ t : rest
+  where
+    ttype = tokenType t
+statement [] = error "Should have at least EOF in statement"
 
 printStatement :: [Token] -> ParseStatementResult
 printStatement (_ : rest) = case expression rest of
@@ -147,8 +181,13 @@ primary (token : rest)
             then (Right $ Grouping inner, leftovers)
             else (Left $ parseError token "Expect ')' after expression", leftovers)
         _ -> error "should always at least EOF in primary"
+  | tokenType token == IDENTIFIER =
+      (Right $ Variable token, rest)
   | otherwise = (Left $ parseError token "Expect expression.", rest)
 primary _ = error "should always at least EOF in primary"
+
+synchronize :: [Token] -> [Token] -- TODO: impl synchronize
+synchronize = id
 
 addToResult :: ParseResult -> Either String Stmt -> ParseResult
 addToResult (Right stmts) (Right stmt) = Right $ stmt : stmts

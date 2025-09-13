@@ -27,6 +27,7 @@ library
   exposed-modules:
       Error
       Lib
+      Phases.Environment
       Phases.Expr
       Phases.Interpreter
       Phases.Parser
