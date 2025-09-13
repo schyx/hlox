@@ -1,5 +1,6 @@
 module Phases.Interpreter (interpret, mkInterpreter, InterpreterOutput, ToPrint (..), Interpreter) where
 
+import qualified Data.Map as Map
 import Error
 import Phases.Environment
 import Phases.Expr
@@ -10,7 +11,7 @@ data ToPrint = Zilch | Literal Literal
 
 type InterpreterOutput = Either String ToPrint
 
-type InterpretExprResult = Either String Literal
+type InterpretExprResult = (Either String Literal, Interpreter)
 
 data Interpreter = MkInterpreter Environment
 
@@ -19,68 +20,83 @@ mkInterpreter = MkInterpreter defaultEnvironment
 
 interpret :: Interpreter -> Stmt -> (Interpreter, InterpreterOutput)
 interpret interp (Print expr) = case interpretExpr interp expr of
-  Left err -> (interp, Left err)
-  Right lit -> (interp, Right $ Literal lit)
+  (Left err, newInterp) -> (newInterp, Left err)
+  (Right lit, newInterp) -> (newInterp, Right $ Literal lit)
 interpret interp (Expression expr) = case interpretExpr interp expr of
-  Left err -> (interp, Left err)
-  Right _ -> (interp, Right Zilch)
-interpret (MkInterpreter env) (Var name initializer) =
-  case interpretExpr (MkInterpreter env) initializer of
-    Left err -> (MkInterpreter env, Left err)
-    Right val -> (MkInterpreter $ define env name val, Right Zilch)
+  (Left err, newInterp) -> (newInterp, Left err)
+  (Right _, newInterp) -> (newInterp, Right Zilch)
+interpret interp (Var name initializer) =
+  case interpretExpr interp initializer of
+    (Left err, newInterp) -> (newInterp, Left err)
+    (Right val, MkInterpreter env) -> (MkInterpreter $ define env name val, Right Zilch)
 
 interpretExpr :: Interpreter -> Expr -> InterpretExprResult
-interpretExpr interp (Binary left operator right) = do
-  leftLiteral <- interpretExpr interp left
-  rightLiteral <- interpretExpr interp right
-  let opType = tokenType operator
-  case opType of
-    EQUAL_EQUAL -> Right $ Boolean $ leftLiteral == rightLiteral
-    BANG_EQUAL -> Right $ Boolean $ leftLiteral /= rightLiteral
-    LESS -> do
-      (leftn, rightn) <- toNumberPair leftLiteral rightLiteral operator
-      Right $ Boolean $ leftn < rightn
-    LESS_EQUAL -> do
-      (leftn, rightn) <- toNumberPair leftLiteral rightLiteral operator
-      Right $ Boolean $ leftn <= rightn
-    GREATER -> do
-      (leftn, rightn) <- toNumberPair leftLiteral rightLiteral operator
-      Right $ Boolean $ leftn > rightn
-    GREATER_EQUAL -> do
-      (leftn, rightn) <- toNumberPair leftLiteral rightLiteral operator
-      Right $ Boolean $ leftn >= rightn
-    STAR -> do
-      (leftn, rightn) <- toNumberPair leftLiteral rightLiteral operator
-      Right $ Number $ leftn * rightn
-    SLASH -> do
-      (leftn, rightn) <- toNumberPair leftLiteral rightLiteral operator
-      if rightn == 0
-        then Left $ runtimeError operator "Dividing by 0."
-        else Right $ Number $ leftn / rightn
-    MINUS -> do
-      (leftn, rightn) <- toNumberPair leftLiteral rightLiteral operator
-      Right $ Number $ leftn - rightn
-    PLUS -> case toNumberPair leftLiteral rightLiteral operator of
-      Right (leftn, rightn) -> Right $ Number $ leftn + rightn
-      Left _ -> case (leftLiteral, rightLiteral) of
-        (Str lefts, Str rights) -> Right $ Str $ lefts ++ rights
-        _ -> Left $ runtimeError operator "Operands must be two numbers or two strings."
-    _ -> error "unexpected opType when interpreting Binary"
-interpretExpr interp (Unary operator expr) = do
-  lit <- interpretExpr interp expr
-  let opType = tokenType operator
-  case opType of
-    BANG -> Right $ Boolean $ not $ isTruthy lit
-    MINUS -> do
-      n <- toNumber lit operator
-      Right $ Number $ -n
+interpretExpr interp (Assign name value) =
+  case interpretExpr interp value of
+    (Right lit, MkInterpreter newEnv) -> case assign newEnv name lit of
+      (Right _, assignedEnv) -> (Right lit, MkInterpreter assignedEnv)
+      (Left err, assignedEnv) -> (Left err, MkInterpreter assignedEnv)
+    err -> err
+interpretExpr interp (Binary left operator right) =
+  case interpretExpr interp left of
+    (Left err, afterLeftInterp) -> (Left err, afterLeftInterp)
+    (Right leftLiteral, afterLeftInterp) -> case interpretExpr afterLeftInterp right of
+      (Left err, afterRightInterp) -> (Left err, afterRightInterp)
+      (Right rightLiteral, afterRightInterp) -> (first, afterRightInterp)
+        where
+          first
+            | tokenType operator `elem` [BANG_EQUAL, EQUAL_EQUAL] =
+                Right $
+                  Boolean
+                    ( if tokenType operator == EQUAL_EQUAL
+                        then leftLiteral == rightLiteral
+                        else leftLiteral /= rightLiteral
+                    )
+            | tokenType operator == PLUS = case toNumberPair leftLiteral rightLiteral operator of
+                Right (leftn, rightn) -> Right $ Number $ leftn + rightn
+                Left _ -> case (leftLiteral, rightLiteral) of
+                  (Str lefts, Str rights) -> Right $ Str $ lefts ++ rights
+                  _ -> Left $ runtimeError operator "Operands must be two numbers or two strings."
+            | Map.member (tokenType operator) numericBinaryTable =
+                case toNumberPair leftLiteral rightLiteral operator of
+                  Right (leftn, rightn) ->
+                    Right $ Number $ (numericBinaryTable Map.! tokenType operator) leftn rightn
+                  Left err -> Left err
+            | Map.member (tokenType operator) booleanBinaryTable =
+                case toNumberPair leftLiteral rightLiteral operator of
+                  Right (leftn, rightn) ->
+                    Right $ Boolean $ (booleanBinaryTable Map.! tokenType operator) leftn rightn
+                  Left err -> Left err
+            | otherwise = error "Unexpected opType when interpreting binary"
+          booleanBinaryTable =
+            Map.fromList
+              [ (LESS, (<)),
+                (LESS_EQUAL, (<=)),
+                (GREATER, (>)),
+                (GREATER_EQUAL, (>=))
+              ]
+          numericBinaryTable =
+            Map.fromList
+              [ (STAR, (*)),
+                (SLASH, (/)),
+                (MINUS, (-))
+              ]
+interpretExpr interp (Unary operator expr) = case interpretExpr interp expr of
+  (Right lit, newInterp) -> case tokenType operator of
+    BANG -> (Right $ Boolean $ not $ isTruthy lit, newInterp)
+    MINUS -> case toNumber lit operator of
+      Right n -> (Right $ Number $ -n, newInterp)
+      Left err -> (Left err, newInterp)
     _ -> error "unexpected opType when interpreting unary"
+  (Left err, newInterp) -> (Left err, newInterp)
 interpretExpr interp (Grouping expr) = interpretExpr interp expr
 interpretExpr (MkInterpreter env) (Variable tok) =
-  case get env tok of
-    Right lit -> Right lit
-    Left err -> Left err
-interpretExpr _ (Primary lit) = Right lit
+  ( case get env tok of
+      Right lit -> Right lit
+      Left err -> Left err,
+    MkInterpreter env
+  )
+interpretExpr interp (Primary lit) = (Right lit, interp)
 
 toNumberPair :: Literal -> Literal -> Token -> Either String (Double, Double)
 toNumberPair left right op = do

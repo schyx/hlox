@@ -33,7 +33,7 @@ declaration (t : rest)
 declaration _ = error "should at least have EOF in declaration"
 
 expression :: [Token] -> ParseExpressionResult
-expression = equality
+expression = assignment
 
 varDeclarationStatement :: [Token] -> ParseStatementResult
 varDeclarationStatement (_ : t1 : afterIdentifier)
@@ -87,6 +87,19 @@ expressionStatement ts = case expression ts of
       else (Left $ parseError t "Expect ';' after value.", leftovers)
   (Left err, leftovers) -> (Left err, leftovers)
   _ -> error "Shouldn't have empty tokens in expressionStatement"
+
+assignment :: [Token] -> ParseExpressionResult
+assignment ts = case equality ts of
+  (Left err, leftovers) -> (Left err, leftovers)
+  (Right expr, t : leftovers) ->
+    if tokenType t == EQUAL
+      then case assignment leftovers of
+        (Left err, afterValue) -> (Left err, afterValue)
+        (Right value, afterValue) -> case expr of
+          (Variable token) -> (Right $ Assign token value, afterValue)
+          _ -> (Left $ parseError t "Invalid assignment target.", afterValue)
+      else (Right expr, t : leftovers)
+  _ -> error "Shouldn't have empty tokens in assignment"
 
 equality :: [Token] -> ParseExpressionResult
 equality tokens = case comparison tokens of
