@@ -1,11 +1,31 @@
 module Tokens
-  ( TokenType(..),
-    Literal(..),
-    Token(..),
+  ( TokenType (..),
+    Literal (..),
+    Token (..),
   )
 where
 
-data Literal = Number Double | Str String | Identifier String | Boolean Bool | Nil | None deriving (Eq, Ord, Show)
+data Literal
+  = Number Double
+  | Str String
+  | Identifier String
+  | Boolean Bool
+  | Nil
+  | None
+  deriving (Eq, Ord)
+
+instance Show Literal where -- TODO: change literal to not include identifiers
+  show (Number n) = formatNumber n
+    where
+      formatNumber :: Double -> String
+      formatNumber x
+        | x == fromInteger (round x) = show (round x :: Integer)
+        | otherwise = show x
+  show (Str s) = s
+  show (Identifier _) = error "shouldn't be showing identifier"
+  show (Boolean b) = if b then "true" else "false"
+  show Nil = "nil"
+  show None = error "shouldn't be showing none"
 
 data Token = MkToken
   { tokenType :: TokenType,
@@ -27,8 +47,8 @@ data TokenType
   | PLUS
   | SEMICOLON
   | STAR
-  -- Two char tokens
-  | SLASH
+  | -- Two char tokens
+    SLASH
   | BANG
   | BANG_EQUAL
   | EQUAL
@@ -37,12 +57,12 @@ data TokenType
   | GREATER_EQUAL
   | LESS
   | LESS_EQUAL
-  -- Variable number char tokens
-  | IDENTIFIER
+  | -- Variable number char tokens
+    IDENTIFIER
   | STRING
   | NUMBER
-  -- Keywords
-  | AND
+  | -- Keywords
+    AND
   | CLASS
   | ELSE
   | FALSE

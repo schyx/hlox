@@ -1,4 +1,4 @@
-module Phases.Interpreter (interpret, InterpreterOutput, ToPrint (..)) where
+module Phases.Interpreter (interpret, InterpreterOutput) where
 
 import qualified Data.Map as Map
 import Error
@@ -7,23 +7,23 @@ import Phases.Expr
 import Phases.Stmt
 import Tokens
 
-data ToPrint = Zilch | Literal Literal
-
-type InterpreterOutput = Either String ToPrint
+type InterpreterOutput = Either String ()
 
 type InterpretExprResult = (Either String Literal, Environment)
 
-interpret :: Environment -> Stmt -> (Environment, InterpreterOutput)
+interpret :: Environment -> Stmt -> IO (Environment, InterpreterOutput)
 interpret interp (Print expr) = case interpretExpr interp expr of
-  (Left err, newInterp) -> (newInterp, Left err)
-  (Right lit, newInterp) -> (newInterp, Right $ Literal lit)
+  (Left err, newInterp) -> return (newInterp, Left err)
+  (Right lit, newInterp) -> do
+    print lit
+    return (newInterp, Right ())
 interpret interp (Expression expr) = case interpretExpr interp expr of
-  (Left err, newInterp) -> (newInterp, Left err)
-  (Right _, newInterp) -> (newInterp, Right Zilch)
+  (Left err, newInterp) -> return (newInterp, Left err)
+  (Right _, newInterp) -> return (newInterp, Right ())
 interpret interp (Var name initializer) =
   case interpretExpr interp initializer of
-    (Left err, newInterp) -> (newInterp, Left err)
-    (Right val, env) -> (define env name val, Right Zilch)
+    (Left err, newInterp) -> return (newInterp, Left err)
+    (Right val, env) -> return (define env name val, Right ())
 
 interpretExpr :: Environment -> Expr -> InterpretExprResult
 interpretExpr interp (Assign name value) =

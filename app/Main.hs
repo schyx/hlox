@@ -8,7 +8,6 @@ import Phases.Stmt
 import System.Environment
 import System.Exit
 import System.IO
-import Tokens
 
 main :: IO ()
 main = do
@@ -23,7 +22,7 @@ checkArgs _ = do
   exitWith $ ExitFailure 64
 
 -- | Creates Lox repl
-runPrompt :: IO ()
+runPrompt :: IO () -- deal with environment persisting
 runPrompt = do
   putStr "> "
   hFlush stdout -- required to get the `>` to show up
@@ -48,34 +47,8 @@ run contents = do
   where
     runInterp :: Environment -> [Stmt] -> IO ()
     runInterp _ [] = return ()
-    runInterp env (s : rest) =
-      let (newEnv, interpOutput) = interpret env s
-        in case interpOutput of
-          Right Zilch -> runInterp newEnv rest
-          Right (Literal l) -> do
-            putStrLn $ printLiteral l
-            runInterp newEnv rest
-          Left err -> putStrLn err
-
-toTestOutput :: Token -> String
-toTestOutput token = show (tokenType token) ++ " " ++ lexeme token ++ " " ++ l
-  where
-    l
-      | None <- lit = "null"
-      | Number n <- lit = show n
-      | Str s <- lit = s
-      | Identifier _ <- lit = "null"
-      | otherwise = error "not yet implemented"
-    lit = literal token
-
-printLiteral :: Literal -> String
-printLiteral Nil = "nil"
-printLiteral (Number n) = formatNumber n
-printLiteral (Str s) = s
-printLiteral (Boolean b) = show b
-printLiteral _ = error "not yet implemented"
-
-formatNumber :: Double -> String
-formatNumber x
-  | x == fromInteger (round x) = show (round x :: Integer)
-  | otherwise = show x
+    runInterp env (s : rest) = do
+      (newEnv, ok) <- interpret env s
+      case ok of
+        Right () -> runInterp newEnv rest
+        Left err -> putStrLn err
