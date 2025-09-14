@@ -64,10 +64,29 @@ statement :: [Token] -> ParseStatementResult
 statement (t : rest)
   | ttype == EOF = (Left "", [])
   | ttype == PRINT = printStatement $ t : rest
+  | ttype == LEFT_BRACE = blockStatement $ t : rest
   | otherwise = expressionStatement $ t : rest
   where
     ttype = tokenType t
 statement [] = error "Should have at least EOF in statement"
+
+blockStatement :: [Token] -> ParseStatementResult
+blockStatement (_ : rest) =
+  let (blockOrErr, leftovers) = buildBlock rest [] in
+    case blockOrErr of
+      Right block -> (Right $ Block $ reverse block, leftovers)
+      Left err -> (Left err, leftovers)
+  where
+    buildBlock (t1 : tRest) buildup
+      | ttype == RIGHT_BRACE = (Right buildup, tRest)
+      | ttype == EOF = (Left $ parseError t1 "Expect '}' after block.", tRest)
+      | otherwise = let ((stmtOrErr, toks), _) = declaration $ t1 : tRest in
+          case stmtOrErr of
+            Right stmt -> buildBlock toks $ stmt : buildup
+            Left err -> (Left err, [last toks])
+      where ttype = tokenType t1
+    buildBlock [] _ = error "Should not have empty in blockStatement helper"
+blockStatement _ = error "Should not have empty in blockStatement"
 
 printStatement :: [Token] -> ParseStatementResult
 printStatement (_ : rest) = case expression rest of

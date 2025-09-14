@@ -7,3 +7,4 @@ data Stmt
   = Expression Expr
   | Print Expr
   | Var Token Expr
+  | Block [Stmt]

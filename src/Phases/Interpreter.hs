@@ -12,18 +12,31 @@ type InterpreterOutput = Either String ()
 type InterpretExprResult = (Either String Literal, Environment)
 
 interpret :: Environment -> Stmt -> IO (Environment, InterpreterOutput)
-interpret interp (Print expr) = case interpretExpr interp expr of
+interpret env (Print expr) = case interpretExpr env expr of
   (Left err, newInterp) -> return (newInterp, Left err)
-  (Right lit, newInterp) -> do
-    print lit
-    return (newInterp, Right ())
-interpret interp (Expression expr) = case interpretExpr interp expr of
+  (Right lit, newInterp) -> print lit >> return (newInterp, Right ())
+interpret env (Expression expr) = case interpretExpr env expr of
   (Left err, newInterp) -> return (newInterp, Left err)
   (Right _, newInterp) -> return (newInterp, Right ())
-interpret interp (Var name initializer) =
-  case interpretExpr interp initializer of
+interpret env (Var name initializer) =
+  case interpretExpr env initializer of
     (Left err, newInterp) -> return (newInterp, Left err)
-    (Right val, env) -> return (define env name val, Right ())
+    (Right val, newEnv) -> return (define newEnv name val, Right ())
+interpret env (Block stmts) = do
+  let blockEnv = envWithParent env
+  (newBlockEnv, output) <- execBlock blockEnv stmts
+  let newEnv = getParent newBlockEnv
+  case output of
+    Right () -> return (newEnv, Right ())
+    Left err -> return (newEnv, Left err)
+  where
+    execBlock :: Environment -> [Stmt] -> IO (Environment, InterpreterOutput)
+    execBlock blockEnv (s : sOther) = do
+      (newBlockEnv, output) <- interpret blockEnv s
+      case output of
+        Right () -> execBlock newBlockEnv sOther
+        Left err -> return (newBlockEnv, Left err)
+    execBlock blockEnv [] = return (blockEnv, Right ())
 
 interpretExpr :: Environment -> Expr -> InterpretExprResult
 interpretExpr interp (Assign name value) =
