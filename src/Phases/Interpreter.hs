@@ -1,4 +1,4 @@
-module Phases.Interpreter (interpret, mkInterpreter, InterpreterOutput, ToPrint (..), Interpreter) where
+module Phases.Interpreter (interpret, InterpreterOutput, ToPrint (..)) where
 
 import qualified Data.Map as Map
 import Error
@@ -11,14 +11,9 @@ data ToPrint = Zilch | Literal Literal
 
 type InterpreterOutput = Either String ToPrint
 
-type InterpretExprResult = (Either String Literal, Interpreter)
+type InterpretExprResult = (Either String Literal, Environment)
 
-data Interpreter = MkInterpreter Environment
-
-mkInterpreter :: Interpreter
-mkInterpreter = MkInterpreter defaultEnvironment
-
-interpret :: Interpreter -> Stmt -> (Interpreter, InterpreterOutput)
+interpret :: Environment -> Stmt -> (Environment, InterpreterOutput)
 interpret interp (Print expr) = case interpretExpr interp expr of
   (Left err, newInterp) -> (newInterp, Left err)
   (Right lit, newInterp) -> (newInterp, Right $ Literal lit)
@@ -28,14 +23,14 @@ interpret interp (Expression expr) = case interpretExpr interp expr of
 interpret interp (Var name initializer) =
   case interpretExpr interp initializer of
     (Left err, newInterp) -> (newInterp, Left err)
-    (Right val, MkInterpreter env) -> (MkInterpreter $ define env name val, Right Zilch)
+    (Right val, env) -> (define env name val, Right Zilch)
 
-interpretExpr :: Interpreter -> Expr -> InterpretExprResult
+interpretExpr :: Environment -> Expr -> InterpretExprResult
 interpretExpr interp (Assign name value) =
   case interpretExpr interp value of
-    (Right lit, MkInterpreter newEnv) -> case assign newEnv name lit of
-      (Right _, assignedEnv) -> (Right lit, MkInterpreter assignedEnv)
-      (Left err, assignedEnv) -> (Left err, MkInterpreter assignedEnv)
+    (Right lit, newEnv) -> case assign newEnv name lit of
+      (Right _, assignedEnv) -> (Right lit, assignedEnv)
+      (Left err, assignedEnv) -> (Left err, assignedEnv)
     err -> err
 interpretExpr interp (Binary left operator right) =
   case interpretExpr interp left of
@@ -90,11 +85,11 @@ interpretExpr interp (Unary operator expr) = case interpretExpr interp expr of
     _ -> error "unexpected opType when interpreting unary"
   (Left err, newInterp) -> (Left err, newInterp)
 interpretExpr interp (Grouping expr) = interpretExpr interp expr
-interpretExpr (MkInterpreter env) (Variable tok) =
+interpretExpr env (Variable tok) =
   ( case get env tok of
       Right lit -> Right lit
       Left err -> Left err,
-    MkInterpreter env
+    env
   )
 interpretExpr interp (Primary lit) = (Right lit, interp)
 

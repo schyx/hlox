@@ -1,5 +1,6 @@
 module Main (main) where
 
+import Phases.Environment
 import Phases.Interpreter
 import Phases.Parser
 import Phases.Scanner
@@ -41,19 +42,19 @@ run contents = do
   let scanResult = scanTokens contents
   case scanResult of
     Right tokens -> case parse tokens of
-      Right stmts -> runInterp mkInterpreter stmts
+      Right stmts -> runInterp defaultEnvironment stmts
       Left errs -> mapM_ putStrLn errs
     Left errs -> mapM_ putStrLn errs
   where
-    runInterp :: Interpreter -> [Stmt] -> IO ()
+    runInterp :: Environment -> [Stmt] -> IO ()
     runInterp _ [] = return ()
-    runInterp interp (s : rest) =
-      let (newInterpreter, interpOutput) = interpret interp s
+    runInterp env (s : rest) =
+      let (newEnv, interpOutput) = interpret env s
         in case interpOutput of
-          Right Zilch -> runInterp newInterpreter rest
+          Right Zilch -> runInterp newEnv rest
           Right (Literal l) -> do
             putStrLn $ printLiteral l
-            runInterp newInterpreter rest
+            runInterp newEnv rest
           Left err -> putStrLn err
 
 toTestOutput :: Token -> String
