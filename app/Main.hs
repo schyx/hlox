@@ -42,13 +42,24 @@ run contents = do
   case scanResult of
     Right tokens -> case parse tokens of
       Right stmts -> runInterp defaultEnvironment stmts
-      Left errs -> mapM_ putStrLn errs
-    Left errs -> mapM_ putStrLn errs
+      Left errs -> do
+        toStderr errs
+        exitWith $ ExitFailure 65
+    Left errs -> do
+      toStderr errs
+      exitWith $ ExitFailure 65
   where
+    toStderr :: [String] -> IO ()
+    toStderr [] = return ()
+    toStderr (err : errs) = do
+      hPutStrLn stderr err
+      toStderr errs
     runInterp :: Environment -> [Stmt] -> IO ()
     runInterp _ [] = return ()
     runInterp env (s : rest) = do
       (newEnv, ok) <- interpret env s
       case ok of
         Right () -> runInterp newEnv rest
-        Left err -> putStrLn err
+        Left err -> do
+          hPutStrLn stderr err
+          exitWith $ ExitFailure 70

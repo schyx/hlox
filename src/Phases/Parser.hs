@@ -26,8 +26,12 @@ parse input = case parseHelper input $ Right [] of
 declaration :: [Token] -> (ParseStatementResult, Bool)
 declaration (t : rest)
   | ttype == EOF = ((Left "", []), False)
-  | ttype == VAR = (varDeclarationStatement $ t : rest, True)
-  | otherwise = (statement (t : rest), True)
+  | ttype == VAR = case varDeclarationStatement $ t : rest of 
+      (Right expr, leftovers) -> ((Right expr, leftovers), True)
+      (Left err, leftovers) -> ((Left err, synchronize leftovers), True)
+  | otherwise = case statement $ t : rest of
+      (Right expr, leftovers) -> ((Right expr, leftovers), True)
+      (Left err, leftovers) -> ((Left err, synchronize leftovers), True)
   where
     ttype = tokenType t
 declaration _ = error "should at least have EOF in declaration"
@@ -218,8 +222,14 @@ primary (token : rest)
   | otherwise = (Left $ parseError token "Expect expression.", rest)
 primary _ = error "should always at least EOF in primary"
 
-synchronize :: [Token] -> [Token] -- TODO: impl synchronize
-synchronize = id
+synchronize :: [Token] -> [Token]
+synchronize (t : toks)
+  | ttype == EOF = t : toks
+  | ttype == SEMICOLON = toks
+  | ttype `elem` [CLASS, FUN, VAR, FOR, IF, WHILE, PRINT, RETURN] = t : toks
+  | otherwise = synchronize toks
+  where ttype = tokenType t
+synchronize [] = error "should not get empty in sync"
 
 addToResult :: ParseResult -> Either String Stmt -> ParseResult
 addToResult (Right stmts) (Right stmt) = Right $ stmt : stmts

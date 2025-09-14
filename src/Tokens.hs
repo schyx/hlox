@@ -5,6 +5,8 @@ module Tokens
   )
 where
 
+import Numeric -- to not get scientific notation
+
 data Literal
   = Number Double
   | Str String
@@ -19,8 +21,9 @@ instance Show Literal where -- TODO: change literal to not include identifiers
     where
       formatNumber :: Double -> String
       formatNumber x
+        | isNegativeZero x = "-0"
         | x == fromInteger (round x) = show (round x :: Integer)
-        | otherwise = show x
+        | otherwise = showFFloat Nothing x ""
   show (Str s) = s
   show (Identifier _) = error "shouldn't be showing identifier"
   show (Boolean b) = if b then "true" else "false"

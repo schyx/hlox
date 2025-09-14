@@ -107,10 +107,9 @@ interpretExpr env (Variable tok) =
 interpretExpr interp (Primary lit) = (Right lit, interp)
 
 toNumberPair :: Literal -> Literal -> Token -> Either String (Double, Double)
-toNumberPair left right op = do
-  leftNum <- toNumber left op
-  rightNum <- toNumber right op
-  Right (leftNum, rightNum)
+toNumberPair left right op = case (toNumber left op, toNumber right op) of
+  (Right l, Right r) -> Right (l, r)
+  _ ->Left $ runtimeError op "Operands must be numbers."
 
 toNumber :: Literal -> Token -> Either String Double
 toNumber (Number n) _ = Right n
