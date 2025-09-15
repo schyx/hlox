@@ -107,7 +107,7 @@ expressionStatement ts = case expression ts of
   (Right expr, t : leftovers) ->
     if tokenType t == SEMICOLON
       then (Right $ Expression expr, leftovers)
-      else (Left $ parseError t "Expect ';' after value.", leftovers)
+      else (Left $ parseError t "Expect ';' after value.", t : leftovers)
   (Left err, leftovers) -> (Left err, leftovers)
   _ -> error "Shouldn't have empty tokens in expressionStatement"
 
