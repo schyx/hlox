@@ -10,8 +10,8 @@ import System.Exit
 import System.IO
 
 data Errs
-  = ScanOrParseErr
-  | RuntimeErr
+  = ScanOrParseErr [String]
+  | RuntimeErr String
 
 main :: IO ()
 main = do
@@ -33,23 +33,40 @@ runPrompt = go defaultEnvironment
       putStr "> "
       hFlush stdout -- required to get the `>` to show up
       input <- getLine
-      errOrEnv <- runWithEnv env input
+      errOrEnv <- runStatements env input
       case errOrEnv of
         Right newEnv -> go newEnv
-        Left _ -> go env
+        Left _ -> do
+          let scanResult = scanTokens input
+          case scanResult of
+            Left errs -> do
+              toStderr errs
+              go env
+            Right tokens -> case expression tokens of
+              (Left err, _) -> do
+                toStderr [err]
+                go env
+              (Right expr, [_eof]) -> case interpretExpr env expr of
+                (Left err, _) -> toStderr [err] >> go env
+                (Right lit, _) -> print lit >> go env
+              (Right _, _) -> toStderr ["Too many tokens."] >> go env
 
 -- | Runs a Lox file
 runFile :: String -> IO ()
 runFile filepath = do
   contents <- readFile filepath
-  errOrEnv <- runWithEnv defaultEnvironment contents
+  errOrEnv <- runStatements defaultEnvironment contents
   case errOrEnv of
     Right _ -> return ()
-    Left ScanOrParseErr -> exitWith $ ExitFailure 65
-    Left RuntimeErr -> exitWith $ ExitFailure 70
+    Left (ScanOrParseErr errs) -> do
+      toStderr errs
+      exitWith $ ExitFailure 65
+    Left (RuntimeErr err) -> do
+      toStderr [err]
+      exitWith $ ExitFailure 70
 
-runWithEnv :: Environment -> String -> IO (Either Errs Environment)
-runWithEnv env contents = do
+runStatements :: Environment -> String -> IO (Either Errs Environment)
+runStatements env contents = do
   let scanResult = scanTokens contents
   case scanResult of
     Right tokens -> case parse tokens of
@@ -57,19 +74,12 @@ runWithEnv env contents = do
         envOrErr <- go env stmts
         case envOrErr of
           Right newEnv -> return $ Right newEnv
-          Left _ -> return $ Left RuntimeErr
+          Left err -> return $ Left $ RuntimeErr err
       Left errs -> do
-        toStderr errs
-        return $ Left ScanOrParseErr
+        return $ Left $ ScanOrParseErr errs
     Left errs -> do
-      toStderr errs
-      return $ Left ScanOrParseErr
+      return $ Left $ ScanOrParseErr errs
   where
-    toStderr :: [String] -> IO ()
-    toStderr [] = return ()
-    toStderr (err : errs) = do
-      hPutStrLn stderr err
-      toStderr errs
     go :: Environment -> [Stmt] -> IO (Either String Environment)
     go e (s : rest) = do
       newEnvOrErr <- runInterp e s
@@ -77,6 +87,12 @@ runWithEnv env contents = do
         Left err -> return $ Left err
         Right newEnv -> go newEnv rest
     go e [] = return $ Right e
+
+toStderr :: [String] -> IO ()
+toStderr [] = return ()
+toStderr (err : errs) = do
+  hPutStrLn stderr err
+  toStderr errs
 
 runInterp :: Environment -> Stmt -> IO (Either String Environment)
 runInterp env s = do

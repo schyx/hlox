@@ -1,4 +1,4 @@
-module Phases.Interpreter (interpret, InterpreterOutput) where
+module Phases.Interpreter (interpret, InterpreterOutput, interpretExpr) where
 
 import qualified Data.Map as Map
 import Error
