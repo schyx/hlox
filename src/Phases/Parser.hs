@@ -144,7 +144,7 @@ expressionStatement ts = case expression ts of
   _ -> error "Shouldn't have empty tokens in expressionStatement"
 
 assignment :: [Token] -> ParseExpressionResult
-assignment ts = case equality ts of
+assignment ts = case orExpr ts of
   (Left err, leftovers) -> (Left err, leftovers)
   (Right expr, t : leftovers) ->
     if tokenType t == EQUAL
@@ -155,6 +155,40 @@ assignment ts = case equality ts of
           _ -> (Left $ parseError t "Invalid assignment target.", afterValue)
       else (Right expr, t : leftovers)
   _ -> error "Shouldn't have empty tokens in assignment"
+
+orExpr :: [Token] -> ParseExpressionResult
+orExpr ts = case andExpr ts of
+  (Left err, leftovers) -> (Left err, leftovers)
+  (Right left, t : leftovers) ->
+    if tokenType t == OR
+      then orHelper left t leftovers
+      else (Right left, t : leftovers)
+  _ -> error "Shouldn't have empty tokens in or"
+  where
+    orHelper left token leftovers = case andExpr leftovers of
+      (Left err, rest) -> (Left err, rest)
+      (Right right, newToken : rest) ->
+        if tokenType newToken == OR
+          then orHelper (OrExpr left token right) newToken rest
+          else (Right $ OrExpr left token right, newToken : rest)
+      _ -> error "should at least see EOF in or helper"
+
+andExpr :: [Token] -> ParseExpressionResult
+andExpr ts = case equality ts of
+  (Left err, leftovers) -> (Left err, leftovers)
+  (Right left, t : leftovers) ->
+    if tokenType t == AND
+      then andHelper left t leftovers
+      else (Right left, t : leftovers)
+  _ -> error "Shouldn't have empty tokens in and"
+  where
+    andHelper left token leftovers = case equality leftovers of
+      (Left err, rest) -> (Left err, rest)
+      (Right right, newToken : rest) ->
+        if tokenType newToken == AND
+          then andHelper (AndExpr left token right) newToken rest
+          else (Right $ AndExpr left token right, newToken : rest)
+      _ -> error "should at least see EOF in and helper"
 
 equality :: [Token] -> ParseExpressionResult
 equality tokens = case comparison tokens of

@@ -114,6 +114,18 @@ interpretExpr env (Variable tok) =
       Left err -> Left err,
     env
   )
+interpretExpr interp (AndExpr left _ right) =
+  case interpretExpr interp left of
+    (Right lit, newEnv) -> if not $ isTruthy lit
+      then (Right lit, newEnv)
+      else interpretExpr newEnv right
+    err -> err
+interpretExpr interp (OrExpr left _ right) =
+  case interpretExpr interp left of
+    (Right lit, newEnv) -> if isTruthy lit
+      then (Right lit, newEnv)
+      else interpretExpr newEnv right
+    err -> err
 interpretExpr interp (Primary lit) = (Right lit, interp)
 
 toNumberPair :: Literal -> Literal -> Token -> Either String (Double, Double)
