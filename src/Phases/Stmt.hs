@@ -9,3 +9,4 @@ data Stmt
   | Var Token Expr
   | Block [Stmt]
   | If Expr Stmt (Maybe Stmt)
+  | While Expr Stmt

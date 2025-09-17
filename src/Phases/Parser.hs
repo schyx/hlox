@@ -39,6 +39,37 @@ declaration _ = error "should at least have EOF in declaration"
 expression :: [Token] -> ParseExpressionResult
 expression = assignment
 
+statement :: [Token] -> ParseStatementResult
+statement (t : rest)
+  | ttype == EOF = (Left "", [])
+  | ttype == PRINT = printStatement $ t : rest
+  | ttype == IF = ifStatement $ t : rest
+  | ttype == WHILE = whileStatement $ t : rest
+  | ttype == LEFT_BRACE = blockStatement $ t : rest
+  | otherwise = expressionStatement $ t : rest
+  where
+    ttype = tokenType t
+statement [] = error "Should have at least EOF in statement"
+
+whileStatement :: [Token] -> ParseStatementResult
+whileStatement (_ : afterWhile) = case afterWhile of
+  [] -> error "Should have at least EOF in whileStatement"
+  (openParen' : afterOpenParen)
+    | tokenType openParen' == LEFT_PAREN ->
+        case expression afterOpenParen of
+          (Right expr, closeParen' : afterCloseParen)
+            | tokenType closeParen' == RIGHT_PAREN ->
+                case statement afterCloseParen of
+                  (Right stmt, afterStmt) -> (Right $ While expr stmt, afterStmt)
+                  err -> err
+            | otherwise ->
+                (Left $ parseError closeParen' "Expect ')' after condition.", afterCloseParen)
+          (Right _, []) -> error "Should have at least EOF in afterOpenParen"
+          (Left err, leftovers) -> (Left err, leftovers)
+    | otherwise ->
+        (Left $ parseError openParen' "Expect '(' after while.", afterOpenParen)
+whileStatement [] = error "Should have at least While in whileStatement"
+
 varDeclarationStatement :: [Token] -> ParseStatementResult
 varDeclarationStatement (_ : t1 : afterIdentifier)
   | tokenType t1 == IDENTIFIER =
@@ -63,17 +94,6 @@ varDeclarationStatement (_ : t1 : afterIdentifier)
   | otherwise = (Left $ parseError t1 "Expect variable name.", synchronize $ t1 : afterIdentifier)
 varDeclarationStatement [t] = (Left $ parseError t "Expect variable name.", [t])
 varDeclarationStatement _ = error "should at least have EOF in varDeclarationStatement 3"
-
-statement :: [Token] -> ParseStatementResult
-statement (t : rest)
-  | ttype == EOF = (Left "", [])
-  | ttype == PRINT = printStatement $ t : rest
-  | ttype == IF = ifStatement $ t : rest
-  | ttype == LEFT_BRACE = blockStatement $ t : rest
-  | otherwise = expressionStatement $ t : rest
-  where
-    ttype = tokenType t
-statement [] = error "Should have at least EOF in statement"
 
 ifStatement :: [Token] -> ParseStatementResult
 ifStatement (_ : ts)

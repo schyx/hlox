@@ -47,6 +47,14 @@ interpret env (If condition ifBranch Nothing) =
       then interpret newEnv ifBranch
       else return (newEnv, Right ())
     (Left err, newEnv) -> return (newEnv, Left err)
+interpret env (While condition whileBlock) =
+  case interpretExpr env condition of
+    (Right lit, newEnv) -> if isTruthy lit
+      then do
+        (afterStmtEnv, Right ()) <- interpret newEnv whileBlock
+        interpret afterStmtEnv (While condition whileBlock)
+      else return (newEnv, Right ())
+    (Left err, newEnv) -> return (newEnv, Left err)
 
 interpretExpr :: Environment -> Expr -> InterpretExprResult
 interpretExpr interp (Assign name value) =
