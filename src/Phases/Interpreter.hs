@@ -37,6 +37,16 @@ interpret env (Block stmts) = do
         Right () -> execBlock newBlockEnv sOther
         Left err -> return (newBlockEnv, Left err)
     execBlock blockEnv [] = return (blockEnv, Right ())
+interpret env (If condition ifBranch (Just elseBranch)) =
+  case interpretExpr env condition of
+    (Right lit, newEnv) -> interpret newEnv (if isTruthy lit then ifBranch else elseBranch)
+    (Left err, newEnv) -> return (newEnv, Left err)
+interpret env (If condition ifBranch Nothing) =
+  case interpretExpr env condition of
+    (Right lit, newEnv) -> if isTruthy lit
+      then interpret newEnv ifBranch
+      else return (newEnv, Right ())
+    (Left err, newEnv) -> return (newEnv, Left err)
 
 interpretExpr :: Environment -> Expr -> InterpretExprResult
 interpretExpr interp (Assign name value) =
@@ -109,7 +119,7 @@ interpretExpr interp (Primary lit) = (Right lit, interp)
 toNumberPair :: Literal -> Literal -> Token -> Either String (Double, Double)
 toNumberPair left right op = case (toNumber left op, toNumber right op) of
   (Right l, Right r) -> Right (l, r)
-  _ ->Left $ runtimeError op "Operands must be numbers."
+  _ -> Left $ runtimeError op "Operands must be numbers."
 
 toNumber :: Literal -> Token -> Either String Double
 toNumber (Number n) _ = Right n

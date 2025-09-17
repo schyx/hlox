@@ -26,7 +26,7 @@ parse input = case parseHelper input $ Right [] of
 declaration :: [Token] -> (ParseStatementResult, Bool)
 declaration (t : rest)
   | ttype == EOF = ((Left "", []), False)
-  | ttype == VAR = case varDeclarationStatement $ t : rest of 
+  | ttype == VAR = case varDeclarationStatement $ t : rest of
       (Right expr, leftovers) -> ((Right expr, leftovers), True)
       (Left err, leftovers) -> ((Left err, synchronize leftovers), True)
   | otherwise = case statement $ t : rest of
@@ -68,27 +68,59 @@ statement :: [Token] -> ParseStatementResult
 statement (t : rest)
   | ttype == EOF = (Left "", [])
   | ttype == PRINT = printStatement $ t : rest
+  | ttype == IF = ifStatement $ t : rest
   | ttype == LEFT_BRACE = blockStatement $ t : rest
   | otherwise = expressionStatement $ t : rest
   where
     ttype = tokenType t
 statement [] = error "Should have at least EOF in statement"
 
+ifStatement :: [Token] -> ParseStatementResult
+ifStatement (_ : ts)
+  | (paren' : rest) <- ts,
+    tokenType paren' == LEFT_PAREN =
+      case expression rest of
+        (Left err, afterCondition) -> (Left err, afterCondition)
+        (Right expr, afterCondition) -> case afterCondition of
+          (rightParen' : afterRightParen)
+            | tokenType rightParen' == RIGHT_PAREN ->
+                case statement afterRightParen of
+                  (Right ifBranch, afterIfBranch) -> case afterIfBranch of
+                    (elseKeyword' : afterElseKeyword) ->
+                      if tokenType elseKeyword' == ELSE
+                        then case statement afterElseKeyword of
+                          (Right elseBranch, afterElseBranch) ->
+                            (Right $ If expr ifBranch $ Just elseBranch, afterElseBranch)
+                          (Left err, afterErr) -> (Left err, afterErr)
+                        else (Right $ If expr ifBranch Nothing, elseKeyword' : afterElseKeyword)
+                    [] -> error "Should have at least EOF in ifStatement after else keyword"
+                  (Left err, afterIfBranchErr) -> (Left err, afterIfBranchErr)
+            | otherwise ->
+                ( Left $ parseError rightParen' "Expect ')' after if condition.",
+                  afterRightParen
+                )
+          [] -> error "Should have at least EOF in ifStatement after right paren"
+  | (paren' : rest) <- ts = (Left $ parseError paren' "Expect '(' after 'if'.", rest)
+  | otherwise = error "Should have at least EOF in ifStatement"
+ifStatement [] = error "Should have at least EOF in ifStatement"
+
 blockStatement :: [Token] -> ParseStatementResult
 blockStatement (_ : rest) =
-  let (blockOrErr, leftovers) = buildBlock rest [] in
-    case blockOrErr of
-      Right block -> (Right $ Block $ reverse block, leftovers)
-      Left err -> (Left err, leftovers)
+  let (blockOrErr, leftovers) = buildBlock rest []
+   in case blockOrErr of
+        Right block -> (Right $ Block $ reverse block, leftovers)
+        Left err -> (Left err, leftovers)
   where
     buildBlock (t1 : tRest) buildup
       | ttype == RIGHT_BRACE = (Right buildup, tRest)
       | ttype == EOF = (Left $ parseError t1 "Expect '}' after block.", tRest)
-      | otherwise = let ((stmtOrErr, toks), _) = declaration $ t1 : tRest in
-          case stmtOrErr of
-            Right stmt -> buildBlock toks $ stmt : buildup
-            Left err -> (Left err, [last toks])
-      where ttype = tokenType t1
+      | otherwise =
+          let ((stmtOrErr, toks), _) = declaration $ t1 : tRest
+           in case stmtOrErr of
+                Right stmt -> buildBlock toks $ stmt : buildup
+                Left err -> (Left err, [last toks])
+      where
+        ttype = tokenType t1
     buildBlock [] _ = error "Should not have empty in blockStatement helper"
 blockStatement _ = error "Should not have empty in blockStatement"
 
@@ -228,7 +260,8 @@ synchronize (t : toks)
   | ttype == SEMICOLON = toks
   | ttype `elem` [CLASS, FUN, VAR, FOR, IF, WHILE, PRINT, RETURN] = t : toks
   | otherwise = synchronize toks
-  where ttype = tokenType t
+  where
+    ttype = tokenType t
 synchronize [] = error "should not get empty in sync"
 
 addToResult :: ParseResult -> Either String Stmt -> ParseResult

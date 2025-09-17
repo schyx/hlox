@@ -8,3 +8,4 @@ data Stmt
   | Print Expr
   | Var Token Expr
   | Block [Stmt]
+  | If Expr Stmt (Maybe Stmt)
