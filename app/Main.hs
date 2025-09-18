@@ -43,13 +43,13 @@ runPrompt = go defaultEnvironment
               toStderr errs
               go env
             Right tokens -> case expression tokens of
-              (Left err, _) -> do
+              Left (err, _) -> do
                 toStderr [err]
                 go env
-              (Right expr, [_eof]) -> case interpretExpr env expr of
+              Right (expr, [_eof]) -> case interpretExpr env expr of
                 (Left err, _) -> toStderr [err] >> go env
                 (Right lit, _) -> print lit >> go env
-              (Right _, _) -> toStderr ["Too many tokens."] >> go env
+              Right (_, _) -> toStderr ["Too many tokens."] >> go env
 
 -- | Runs a Lox file
 runFile :: String -> IO ()
