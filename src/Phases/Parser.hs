@@ -48,11 +48,60 @@ statement (t : rest)
   | ttype == PRINT = printStatement $ t : rest
   | ttype == IF = ifStatement $ t : rest
   | ttype == WHILE = whileStatement $ t : rest
+  | ttype == FOR = forStatement $ t : rest
   | ttype == LEFT_BRACE = blockStatement $ t : rest
   | otherwise = expressionStatement $ t : rest
   where
     ttype = tokenType t
 statement [] = error "Should have at least EOF in statement"
+
+forStatement :: [Token] -> ParseStatementResult
+forStatement (_ : afterFor) = do
+  (_, afterLeftParen) <- consume LEFT_PAREN afterFor "Expect '(' after for."
+  (initializer, afterInitializer) <- getInitializer afterLeftParen
+  (condition, afterCondition) <- getCondition afterInitializer
+  (_, afterSecondSemi) <- consume SEMICOLON afterCondition "Expect ';' after loop condition."
+  (increment, afterIncrement) <- getIncrement afterSecondSemi
+  (_, afterRightParen) <- consume RIGHT_PAREN afterIncrement "Expect ')' after for clauses."
+  (body, afterBody) <- statement afterRightParen
+  let desugared = desugarToWhile initializer condition increment body
+  return (desugared, afterBody)
+  where
+    desugarToWhile :: Maybe Stmt -> Maybe Expr -> Maybe Expr -> Stmt -> Stmt
+    desugarToWhile initializer condition increment body =
+      let newBody = (case increment of
+                       Nothing  -> body
+                       Just inc -> Block [body, Expression inc])
+          newCondition = (case condition of
+                            Nothing   -> Primary $ Boolean True
+                            Just cond -> cond)
+          newStmt = let while = While newCondition newBody
+                      in (case initializer of
+                            Nothing      -> while
+                            Just initial -> Block [initial, while])
+        in newStmt
+    getIncrement :: [Token] -> Either (String, [Token]) (Maybe Expr, [Token])
+    getIncrement toks
+      | (isMatch, _) <- match [RIGHT_PAREN] toks, isMatch = return (Nothing, toks)
+      | otherwise = do
+          (increment, afterIncrement) <- expression toks
+          return (Just increment, afterIncrement)
+    getCondition :: [Token] -> Either (String, [Token]) (Maybe Expr, [Token])
+    getCondition toks
+      | (isMatch, _) <- match [SEMICOLON] toks, isMatch = return (Nothing, toks)
+      | otherwise = do
+          (condition, afterCondition) <- expression toks
+          return (Just condition, afterCondition)
+    getInitializer :: [Token] -> Either (String, [Token]) (Maybe Stmt, [Token])
+    getInitializer toks
+      | (isMatch, afterSemi) <- match [SEMICOLON] toks, isMatch = return (Nothing, afterSemi)
+      | (isMatch, _) <- match [VAR] toks, isMatch = do
+          (initializer, afterInitializer) <- varDeclarationStatement toks
+          return (Just initializer, afterInitializer)
+      | otherwise = do
+          (initializer, afterInitializer) <- expressionStatement toks
+          return (Just initializer, afterInitializer)
+forStatement [] = error "Should have at least for in forStatement"
 
 whileStatement :: [Token] -> ParseStatementResult
 whileStatement (_ : afterWhile) = do
@@ -119,14 +168,14 @@ blockStatement _ = error "Should not have empty in blockStatement"
 printStatement :: [Token] -> ParseStatementResult
 printStatement (_ : afterPrint) = do
   (expr, afterExpr) <- expression afterPrint
-  (_, leftovers) <- consume SEMICOLON afterExpr "Expect ';' after value."
+  (_, leftovers) <- consume SEMICOLON afterExpr "Expect ';' after expression."
   return (Print expr, leftovers)
 printStatement [] = error "Shouln't have empty tokens in printStatement"
 
 expressionStatement :: [Token] -> ParseStatementResult
 expressionStatement ts = do
   (expr, afterExpr) <- expression ts
-  (_, leftovers) <- consume SEMICOLON afterExpr "Expect ';' after value."
+  (_, leftovers) <- consume SEMICOLON afterExpr "Expect ';' after expression."
   return (Expression expr, leftovers)
 
 assignment :: [Token] -> ParseExpressionResult
@@ -204,6 +253,11 @@ primary (token : rest)
   | tokenType token == IDENTIFIER = return (Variable token, rest)
   | otherwise = Left (parseError token "Expect expression.", rest)
 primary _ = error "should always at least EOF in primary"
+
+match :: [TokenType] -> [Token] -> (Bool, [Token])
+match types (t : toks) = let isMatch = tokenType t `elem` types
+  in (isMatch, if isMatch then toks else t : toks)
+match _     []         = error "Should have at least EOF in match"
 
 consume :: TokenType -> [Token] -> String -> Either (String, [Token]) (Token, [Token])
 consume ttype (t1 : rest) errMsg = if tokenType t1 == ttype
