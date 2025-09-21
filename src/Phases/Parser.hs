@@ -55,70 +55,47 @@ statement (t : rest)
 statement [] = error "Should have at least EOF in statement"
 
 whileStatement :: [Token] -> ParseStatementResult
-whileStatement (_ : afterWhile) = case afterWhile of
-  [] -> error "Should have at least EOF in whileStatement"
-  (openParen' : afterOpenParen)
-    | tokenType openParen' == LEFT_PAREN -> do
-        (expr, afterExpr) <- expression afterOpenParen
-        case afterExpr of
-          closeParen' : afterCloseParen
-            | tokenType closeParen' == RIGHT_PAREN -> do
-                (stmt, afterStmt) <- statement afterCloseParen
-                return (While expr stmt, afterStmt)
-            | otherwise -> Left (parseError closeParen' "Expect ')' after condition.", afterCloseParen)
-          _ -> error "Should have at least EOF in afterOpenParen"
-    | otherwise -> Left (parseError openParen' "Expect '(' after while.", afterOpenParen)
+whileStatement (_ : afterWhile) = do
+  (_, afterOpenParen) <- consume LEFT_PAREN afterWhile "Expect '(' after while."
+  (expr, afterExpr) <- expression afterOpenParen
+  (_, afterCloseParen) <- consume RIGHT_PAREN afterExpr "Expect ')' after condition."
+  (stmt, afterStmt) <- statement afterCloseParen
+  return (While expr stmt, afterStmt)
 whileStatement [] = error "Should have at least While in whileStatement"
 
 varDeclarationStatement :: [Token] -> ParseStatementResult
-varDeclarationStatement (_ : t1 : afterIdentifier)
-  | tokenType t1 == IDENTIFIER =
-      case afterIdentifier of
-        t2 : afterEqual -> case tokenType t2 of
-          EQUAL -> do
-            (expr, afterExpr) <- expression afterEqual
-            case afterExpr of
-              (semicolon : leftovers) ->
-                if tokenType semicolon == SEMICOLON
-                  then return (Var t1 expr, leftovers)
-                  else
-                    Left
-                      ( parseError semicolon "Expect ';' after variable declaration.",
-                        synchronize $ semicolon : leftovers
-                      )
-              _ -> error "Should at least have EOF in varDeclarationStatement"
-          SEMICOLON -> return (Var t1 (Primary Nil), afterEqual) -- TODO: make the value here Nothing
-          _ ->
-            Left
-              ( parseError t2 "Expect ';' after variable declaration.",
-                synchronize $ t2 : afterEqual
-              )
-        _ -> error "Should at least have EOF in varDeclarationStatement 2"
-  | otherwise = Left (parseError t1 "Expect variable name.", synchronize $ t1 : afterIdentifier)
 varDeclarationStatement [t] = Left (parseError t "Expect variable name.", [t])
+varDeclarationStatement (_ : rest) = do
+  (t1, afterIdentifier) <- consume IDENTIFIER rest "Expect variable name."
+  case afterIdentifier of
+    t2 : afterEqual -> case tokenType t2 of
+      EQUAL -> do
+        (expr, afterExpr) <- expression afterEqual
+        (_, leftovers) <- consume SEMICOLON afterExpr "Expect ';' after variable declaration."
+        return (Var t1 expr, leftovers)
+      SEMICOLON -> return (Var t1 (Primary Nil), afterEqual) -- TODO: make the value here Nothing
+      _ ->
+        Left
+          ( parseError t2 "Expect ';' after variable declaration.",
+            synchronize $ t2 : afterEqual
+          )
+    _ -> error "Should at least have EOF in varDeclarationStatement 2"
 varDeclarationStatement _ = error "should at least have EOF in varDeclarationStatement 3"
 
 ifStatement :: [Token] -> ParseStatementResult
-ifStatement (_ : ts)
-  | (paren' : rest) <- ts,
-    tokenType paren' == LEFT_PAREN = do
-      (expr, afterCondition) <- expression rest
-      case afterCondition of
-        (rightParen' : afterRightParen)
-          | tokenType rightParen' == RIGHT_PAREN -> do
-              (ifBranch, afterIfBranch) <- statement afterRightParen
-              case afterIfBranch of
-                (elseKeyword' : afterElseKeyword) ->
-                  if tokenType elseKeyword' == ELSE
-                    then do
-                      (elseBranch, afterElseBranch) <- statement afterElseKeyword
-                      return (If expr ifBranch $ Just elseBranch, afterElseBranch)
-                    else return (If expr ifBranch Nothing, elseKeyword' : afterElseKeyword)
-                [] -> error "Should have at least EOF in ifStatement after else keyword"
-          | otherwise -> Left (parseError rightParen' "Expect ')' after if condition.", afterRightParen)
-        [] -> error "Should have at least EOF in ifStatement after right paren"
-  | (paren' : rest) <- ts = Left (parseError paren' "Expect '(' after 'if'.", rest)
-  | otherwise = error "Should have at least EOF in ifStatement"
+ifStatement (_ : ts) = do
+  (_, afterLeftParen) <- consume LEFT_PAREN ts "Expect '(' after 'if'."
+  (expr, afterCondition) <- expression afterLeftParen
+  (_, afterRightParen) <- consume RIGHT_PAREN afterCondition "Expect ')' after if condition."
+  (ifBranch, afterIfBranch) <- statement afterRightParen
+  case afterIfBranch of
+    (elseKeyword' : afterElseKeyword) ->
+      if tokenType elseKeyword' == ELSE
+        then do
+          (elseBranch, afterElseBranch) <- statement afterElseKeyword
+          return (If expr ifBranch $ Just elseBranch, afterElseBranch)
+        else return (If expr ifBranch Nothing, elseKeyword' : afterElseKeyword)
+    [] -> error "Should have at least EOF in ifStatement after else keyword"
 ifStatement [] = error "Should have at least EOF in ifStatement"
 
 blockStatement :: [Token] -> ParseStatementResult
@@ -142,21 +119,15 @@ blockStatement _ = error "Should not have empty in blockStatement"
 printStatement :: [Token] -> ParseStatementResult
 printStatement (_ : afterPrint) = do
   (expr, afterExpr) <- expression afterPrint
-  case afterExpr of
-    (semi : leftovers)
-      | tokenType semi == SEMICOLON -> return (Print expr, leftovers)
-      | otherwise -> Left (parseError semi "Expect ';' after value.", leftovers)
-    [] -> error "Shouln't have empty tokens in printStatement"
+  (_, leftovers) <- consume SEMICOLON afterExpr "Expect ';' after value."
+  return (Print expr, leftovers)
 printStatement [] = error "Shouln't have empty tokens in printStatement"
 
 expressionStatement :: [Token] -> ParseStatementResult
 expressionStatement ts = do
   (expr, afterExpr) <- expression ts
-  case afterExpr of
-    (semi : leftovers)
-      | tokenType semi == SEMICOLON -> return (Expression expr, leftovers)
-      | otherwise -> Left (parseError semi "Expect ';' after value.", afterExpr)
-    _ -> error "Shouldn't have empty tokens in expressionStatement"
+  (_, leftovers) <- consume SEMICOLON afterExpr "Expect ';' after value."
+  return (Expression expr, leftovers)
 
 assignment :: [Token] -> ParseExpressionResult
 assignment ts = do
@@ -228,14 +199,17 @@ primary (token : rest)
       return (Primary $ literal token, rest)
   | tokenType token == LEFT_PAREN = do
       (inner, afterExpr) <- expression rest
-      case afterExpr of
-        (rightParen : afterRightParen)
-          | tokenType rightParen == RIGHT_PAREN -> return (Grouping inner, afterRightParen)
-          | otherwise -> Left (parseError token "Expect ')' after expression", afterExpr)
-        [] -> error "should always at least EOF in grouping"
+      (_, afterRightParen) <- consume RIGHT_PAREN afterExpr "Expect ')' after expression."
+      return (Grouping inner, afterRightParen)
   | tokenType token == IDENTIFIER = return (Variable token, rest)
   | otherwise = Left (parseError token "Expect expression.", rest)
 primary _ = error "should always at least EOF in primary"
+
+consume :: TokenType -> [Token] -> String -> Either (String, [Token]) (Token, [Token])
+consume ttype (t1 : rest) errMsg = if tokenType t1 == ttype
+  then Right (t1, rest)
+  else Left (parseError t1 errMsg, rest)
+consume _     []          _      = error "Should have at least EOF in consume"
 
 synchronize :: [Token] -> [Token]
 synchronize (t : toks)
@@ -243,8 +217,7 @@ synchronize (t : toks)
   | ttype == SEMICOLON = toks
   | ttype `elem` [CLASS, FUN, VAR, FOR, IF, WHILE, PRINT, RETURN] = t : toks
   | otherwise = synchronize toks
-  where
-    ttype = tokenType t
+  where ttype = tokenType t
 synchronize [] = error "should not get empty in sync"
 
 addToResult :: ParseResult -> Either String Stmt -> ParseResult
