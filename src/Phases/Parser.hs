@@ -27,17 +27,14 @@ parse input = case parseHelper input $ Right [] of
           else result
 
 declaration :: [Token] -> (ParseStatementResult, Bool)
-declaration (t : rest)
-  | ttype == EOF = (Left ("", []), False)
-  | ttype == VAR = case varDeclarationStatement $ t : rest of
+declaration tokens
+  | (Right _, _) <- matchFirst [EOF] tokens = (Left ("", []), False)
+  | (Right _, _) <- matchFirst [VAR] tokens = case varDeclarationStatement tokens of
       Right (expr, leftovers) -> (Right (expr, leftovers), True)
       Left (err, leftovers)   -> (Left (err, synchronize leftovers), True)
-  | otherwise = case statement $ t : rest of
+  | otherwise = case statement tokens of
       Right (expr, leftovers) -> (Right (expr, leftovers), True)
       Left (err, leftovers)   -> (Left (err, synchronize leftovers), True)
-  where
-    ttype = tokenType t
-declaration _ = error "should at least have EOF in declaration"
 
 expression :: [Token] -> ParseExpressionResult
 expression = assignment
@@ -82,20 +79,20 @@ forStatement (_ : afterFor) = do
         in newStmt
     getIncrement :: [Token] -> Either (String, [Token]) (Maybe Expr, [Token])
     getIncrement toks
-      | (isMatch, _) <- match [RIGHT_PAREN] toks, isMatch = return (Nothing, toks)
+      | (Right _, _) <- matchFirst [RIGHT_PAREN] toks = return (Nothing, toks)
       | otherwise = do
           (increment, afterIncrement) <- expression toks
           return (Just increment, afterIncrement)
     getCondition :: [Token] -> Either (String, [Token]) (Maybe Expr, [Token])
     getCondition toks
-      | (isMatch, _) <- match [SEMICOLON] toks, isMatch = return (Nothing, toks)
+      | (Right _, _) <- matchFirst [SEMICOLON] toks = return (Nothing, toks)
       | otherwise = do
           (condition, afterCondition) <- expression toks
           return (Just condition, afterCondition)
     getInitializer :: [Token] -> Either (String, [Token]) (Maybe Stmt, [Token])
     getInitializer toks
-      | (isMatch, afterSemi) <- match [SEMICOLON] toks, isMatch = return (Nothing, afterSemi)
-      | (isMatch, _) <- match [VAR] toks, isMatch = do
+      | (Right _, afterSemi) <- matchFirst [SEMICOLON] toks = return (Nothing, afterSemi)
+      | (Right _, _) <- matchFirst [VAR] toks = do
           (initializer, afterInitializer) <- varDeclarationStatement toks
           return (Just initializer, afterInitializer)
       | otherwise = do
@@ -137,14 +134,15 @@ ifStatement (_ : ts) = do
   (expr, afterCondition) <- expression afterLeftParen
   (_, afterRightParen) <- consume RIGHT_PAREN afterCondition "Expect ')' after if condition."
   (ifBranch, afterIfBranch) <- statement afterRightParen
-  case afterIfBranch of
-    (elseKeyword' : afterElseKeyword) ->
-      if tokenType elseKeyword' == ELSE
-        then do
-          (elseBranch, afterElseBranch) <- statement afterElseKeyword
-          return (If expr ifBranch $ Just elseBranch, afterElseBranch)
-        else return (If expr ifBranch Nothing, elseKeyword' : afterElseKeyword)
-    [] -> error "Should have at least EOF in ifStatement after else keyword"
+  (elseBranch, afterElseBranch) <- getElseBranch afterIfBranch
+  return (If expr ifBranch elseBranch, afterElseBranch)
+  where
+    getElseBranch :: [Token] -> Either (String, [Token]) (Maybe Stmt, [Token])
+    getElseBranch toks
+      | (Right _, afterElseKeyword) <- matchFirst [ELSE] toks = do
+          (elseStmt, afterElseBranch) <- statement afterElseKeyword
+          return (Just elseStmt, afterElseBranch)
+      | otherwise = return (Nothing, toks)
 ifStatement [] = error "Should have at least EOF in ifStatement"
 
 blockStatement :: [Token] -> ParseStatementResult
@@ -153,16 +151,13 @@ blockStatement (_ : rest) = do
   return (Block $ reverse blockStatements, leftovers)
   where
     buildBlock :: [Token] -> [Stmt] -> Either (String, [Token]) ([Stmt], [Token])
-    buildBlock (t1 : tRest) buildup
-      | ttype == RIGHT_BRACE = return (buildup, tRest)
-      | ttype == EOF = Left (parseError t1 "Expect '}' after block.", tRest)
+    buildBlock toks buildup
+      | (Right _, tRest) <- matchFirst [RIGHT_BRACE] toks = return (buildup, tRest)
+      | (Right t, tRest) <- matchFirst [EOF] toks = Left (parseError t "Expect '}' after block.", tRest)
       | otherwise = do
-          case declaration $ t1 : tRest of
+          case declaration toks of
             (Right (stmt, leftovers), _) -> buildBlock leftovers $ stmt : buildup
             (Left (err, leftovers), _) -> Left (err, leftovers)
-      where
-        ttype = tokenType t1
-    buildBlock [] _ = error "Should not have empty in blockStatement helper"
 blockStatement _ = error "Should not have empty in blockStatement"
 
 printStatement :: [Token] -> ParseStatementResult
@@ -181,16 +176,14 @@ expressionStatement ts = do
 assignment :: [Token] -> ParseExpressionResult
 assignment ts = do
   (expr, afterExpr) <- orExpr ts
-  case afterExpr of
-    (t : leftovers) ->
-      if tokenType t == EQUAL
-        then do
-          (value, afterValue) <- assignment leftovers
-          case expr of
-            (Variable token) -> return (Assign token value, afterValue)
-            _ -> Left (parseError t "Invalid assignment target.", afterValue)
-        else return (expr, afterExpr)
-    [] -> error "Shouldn't have empty tokens in assignment"
+  let (isMatch, afterRHS) = matchFirst [EQUAL] afterExpr
+  case isMatch of
+    Right t -> do
+      (value, afterValue) <- assignment afterRHS
+      case expr of
+        (Variable token) -> return (Assign token value, afterValue)
+        _ -> Left (parseError t "Invalid assignment target.", afterValue)
+    Left _ -> return (expr, afterExpr)
 
 orExpr :: [Token] -> ParseExpressionResult
 orExpr = chainedOperator andExpr [OR] OrExpr
@@ -217,30 +210,24 @@ chainedOperator ::
   ([Token] -> ParseExpressionResult)
 chainedOperator innerParseF matchTokenTypes exprConstructor tokens = do
   (left, afterLeft) <- innerParseF tokens
-  case afterLeft of
-    (op : rest) ->
-      if tokenType op `elem` matchTokenTypes
-        then chainedOperatorHelper left op rest
-        else return (left, afterLeft)
-    [] -> error $ "should at least see EOF in helper for " ++ show matchTokenTypes
+  case matchFirst matchTokenTypes afterLeft of
+    (Right op, afterOp) -> chainedOperatorHelper left op afterOp
+    (Left (), rest)     -> return (left, rest)
   where
     chainedOperatorHelper :: Expr -> Token -> [Token] -> ParseExpressionResult
     chainedOperatorHelper left op afterOp = do
       (right, afterRight) <- innerParseF afterOp
-      case afterRight of
-        (afterRightOp : rest) ->
-          if tokenType afterRightOp `elem` matchTokenTypes
-            then chainedOperatorHelper (exprConstructor left op right) afterRightOp rest
-            else return (exprConstructor left op right, afterRight)
-        [] -> error $ "should at least see EOF in helper for helper for " ++ show matchTokenTypes
+      case matchFirst matchTokenTypes afterRight of
+        (Right afterRightOp, rest) ->
+          chainedOperatorHelper (exprConstructor left op right) afterRightOp rest
+        (Left (), rest) -> return (exprConstructor left op right, rest)
 
 unary :: [Token] -> ParseExpressionResult
-unary (token : rest)
-  | tokenType token `elem` [MINUS, BANG] = do
-      (right, leftovers) <- unary rest
-      return (Unary token right, leftovers)
-  | otherwise = primary (token : rest)
-unary [] = error "should at least see EOF in unary"
+unary toks = case matchFirst [MINUS, BANG] toks of
+  (Right token, afterOp) -> do
+    (right, leftovers) <- unary afterOp
+    return (Unary token right, leftovers)
+  (Left (), afterCheck) -> primary afterCheck
 
 primary :: [Token] -> ParseExpressionResult
 primary (token : rest)
@@ -254,10 +241,10 @@ primary (token : rest)
   | otherwise = Left (parseError token "Expect expression.", rest)
 primary _ = error "should always at least EOF in primary"
 
-match :: [TokenType] -> [Token] -> (Bool, [Token])
-match types (t : toks) = let isMatch = tokenType t `elem` types
-  in (isMatch, if isMatch then toks else t : toks)
-match _     []         = error "Should have at least EOF in match"
+matchFirst :: [TokenType] -> [Token] -> (Either () Token, [Token])
+matchFirst types (t : toks) = let isMatch = tokenType t `elem` types
+  in (if isMatch then Right t else Left (), if isMatch then toks else t : toks)
+matchFirst _     []         = error "Should have at least EOF in match"
 
 consume :: TokenType -> [Token] -> String -> Either (String, [Token]) (Token, [Token])
 consume ttype (t1 : rest) errMsg = if tokenType t1 == ttype
