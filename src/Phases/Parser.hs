@@ -1,9 +1,9 @@
 module Phases.Parser (parse, ParseResult, expression) where
 
-import Error
-import Phases.Expr
-import Phases.Stmt
-import Tokens
+import           Error
+import           Phases.Expr
+import           Phases.Stmt
+import           Tokens
 
 type ParseResult = Either [String] [Stmt]
 
@@ -13,7 +13,7 @@ type ParseStatementResult = Either (String, [Token]) (Stmt, [Token])
 
 parse :: [Token] -> ParseResult
 parse input = case parseHelper input $ Right [] of
-  Left errs -> Left $ reverse errs
+  Left errs   -> Left $ reverse errs
   Right stmts -> Right $ reverse stmts
   where
     parseHelper :: [Token] -> ParseResult -> ParseResult
@@ -21,9 +21,9 @@ parse input = case parseHelper input $ Right [] of
       let (decRes, shouldContinue) = declaration tokens
           (parsedResult, leftovers) = case decRes of
             Right (f, s) -> (Right f, s)
-            Left (f, s) -> (Left f, s)
+            Left (f, s)  -> (Left f, s)
         in if shouldContinue
-          then parseHelper leftovers $ addToResult result parsedResult 
+          then parseHelper leftovers $ addToResult result parsedResult
           else result
 
 declaration :: [Token] -> (ParseStatementResult, Bool)
@@ -31,10 +31,10 @@ declaration (t : rest)
   | ttype == EOF = (Left ("", []), False)
   | ttype == VAR = case varDeclarationStatement $ t : rest of
       Right (expr, leftovers) -> (Right (expr, leftovers), True)
-      Left (err, leftovers) -> (Left (err, synchronize leftovers), True)
+      Left (err, leftovers)   -> (Left (err, synchronize leftovers), True)
   | otherwise = case statement $ t : rest of
       Right (expr, leftovers) -> (Right (expr, leftovers), True)
-      Left (err, leftovers) -> (Left (err, synchronize leftovers), True)
+      Left (err, leftovers)   -> (Left (err, synchronize leftovers), True)
   where
     ttype = tokenType t
 declaration _ = error "should at least have EOF in declaration"
@@ -249,6 +249,6 @@ synchronize [] = error "should not get empty in sync"
 
 addToResult :: ParseResult -> Either String Stmt -> ParseResult
 addToResult (Right stmts) (Right stmt) = Right $ stmt : stmts
-addToResult (Left errs) (Left err) = Left $ err : errs
-addToResult (Right _) (Left err) = Left [err]
-addToResult errs _ = errs
+addToResult (Left errs) (Left err)     = Left $ err : errs
+addToResult (Right _) (Left err)       = Left [err]
+addToResult errs _                     = errs

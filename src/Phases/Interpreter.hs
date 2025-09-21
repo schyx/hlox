@@ -1,11 +1,11 @@
 module Phases.Interpreter (interpret, InterpreterOutput, interpretExpr) where
 
-import qualified Data.Map as Map
-import Error
-import Phases.Environment
-import Phases.Expr
-import Phases.Stmt
-import Tokens
+import qualified Data.Map           as Map
+import           Error
+import           Phases.Environment
+import           Phases.Expr
+import           Phases.Stmt
+import           Tokens
 
 type InterpreterOutput = Either String ()
 
@@ -13,15 +13,15 @@ type InterpretExprResult = (Either String Literal, Environment)
 
 interpret :: Environment -> Stmt -> IO (Environment, InterpreterOutput)
 interpret env (Print expr) = case interpretExpr env expr of
-  (Left err, newInterp) -> return (newInterp, Left err)
+  (Left err, newInterp)  -> return (newInterp, Left err)
   (Right lit, newInterp) -> print lit >> return (newInterp, Right ())
 interpret env (Expression expr) = case interpretExpr env expr of
   (Left err, newInterp) -> return (newInterp, Left err)
-  (Right _, newInterp) -> return (newInterp, Right ())
+  (Right _, newInterp)  -> return (newInterp, Right ())
 interpret env (Var name initializer) =
   case interpretExpr env initializer of
     (Left err, newInterp) -> return (newInterp, Left err)
-    (Right val, newEnv) -> return (define newEnv name val, Right ())
+    (Right val, newEnv)   -> return (define newEnv name val, Right ())
 interpret env (Block stmts) = do
   let blockEnv = envWithParent env
   (newBlockEnv, output) <- execBlock blockEnv stmts
@@ -60,7 +60,7 @@ interpretExpr :: Environment -> Expr -> InterpretExprResult
 interpretExpr interp (Assign name value) =
   case interpretExpr interp value of
     (Right lit, newEnv) -> case assign newEnv name lit of
-      (Right _, assignedEnv) -> (Right lit, assignedEnv)
+      (Right _, assignedEnv)  -> (Right lit, assignedEnv)
       (Left err, assignedEnv) -> (Left err, assignedEnv)
     err -> err
 interpretExpr interp (Binary left operator right) =
@@ -111,7 +111,7 @@ interpretExpr interp (Unary operator expr) = case interpretExpr interp expr of
   (Right lit, newInterp) -> case tokenType operator of
     BANG -> (Right $ Boolean $ not $ isTruthy lit, newInterp)
     MINUS -> case toNumber lit operator of
-      Right n -> (Right $ Number $ -n, newInterp)
+      Right n  -> (Right $ Number $ -n, newInterp)
       Left err -> (Left err, newInterp)
     _ -> error "unexpected opType when interpreting unary"
   (Left err, newInterp) -> (Left err, newInterp)
@@ -119,7 +119,7 @@ interpretExpr interp (Grouping expr) = interpretExpr interp expr
 interpretExpr env (Variable tok) =
   ( case get env tok of
       Right lit -> Right lit
-      Left err -> Left err,
+      Left err  -> Left err,
     env
   )
 interpretExpr interp (AndExpr left _ right) =
@@ -139,13 +139,13 @@ interpretExpr interp (Primary lit) = (Right lit, interp)
 toNumberPair :: Literal -> Literal -> Token -> Either String (Double, Double)
 toNumberPair left right op = case (toNumber left op, toNumber right op) of
   (Right l, Right r) -> Right (l, r)
-  _ -> Left $ runtimeError op "Operands must be numbers."
+  _                  -> Left $ runtimeError op "Operands must be numbers."
 
 toNumber :: Literal -> Token -> Either String Double
 toNumber (Number n) _ = Right n
-toNumber _ token = Left $ runtimeError token "Operand must be a number."
+toNumber _ token      = Left $ runtimeError token "Operand must be a number."
 
 isTruthy :: Literal -> Bool
-isTruthy Nil = False
+isTruthy Nil         = False
 isTruthy (Boolean b) = b
-isTruthy _ = True
+isTruthy _           = True

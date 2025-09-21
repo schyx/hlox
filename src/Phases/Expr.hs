@@ -1,6 +1,6 @@
 module Phases.Expr (Expr(..)) where
 
-import Tokens
+import           Tokens
 
 data Expr
   = Assign Token Expr

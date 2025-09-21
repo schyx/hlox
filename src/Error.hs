@@ -1,7 +1,7 @@
 module Error (parseError, runtimeError, report) where
 
-import Text.Printf
-import Tokens
+import           Text.Printf
+import           Tokens
 
 parseError :: Token -> String -> String
 parseError token message

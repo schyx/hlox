@@ -1,6 +1,6 @@
-import Test.HUnit
+import           Test.HUnit
 
-import ScannerTests
+import           ScannerTests
 
 main :: IO ()
 main = do

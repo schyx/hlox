@@ -5,7 +5,7 @@ module Tokens
   )
 where
 
-import Numeric -- to not get scientific notation
+import           Numeric
 
 data Literal
   = Number Double
@@ -32,10 +32,10 @@ instance Show Literal where -- TODO: change literal to not include identifiers
 
 data Token = MkToken
   { tokenType :: TokenType,
-    lexeme :: String,
-    literal :: Literal,
-    line :: Int,
-    offset :: Int
+    lexeme    :: String,
+    literal   :: Literal,
+    line      :: Int,
+    offset    :: Int
   }
   deriving (Eq, Ord, Show)
 

@@ -1,9 +1,9 @@
 module Phases.Scanner (scanTokens, ScanResult) where
 
-import Data.Char
-import qualified Data.Map as Map
-import Error
-import Tokens
+import           Data.Char
+import qualified Data.Map  as Map
+import           Error
+import           Tokens
 
 type ScanResult = Either [String] [Token]
 
@@ -12,7 +12,7 @@ scanTokens :: String -> ScanResult
 scanTokens contents =
   case scanHelper contents 1 1 $ Right [] of
     -- reverse the list because we build it up in reverse order
-    Left errs -> Left $ reverse errs
+    Left errs    -> Left $ reverse errs
     Right tokens -> Right $ reverse tokens
 
 scanHelper :: String -> Int -> Int -> ScanResult -> ScanResult
@@ -265,13 +265,13 @@ addPotentialTwoCharToken c rest
   where
     singleToken char =
       case Map.lookup char table of
-        Nothing -> error "bruh"
+        Nothing          -> error "bruh"
         Just constructor -> (constructor, rest, 1, [char])
 
 removeUntilNewline :: String -> String
-removeUntilNewline [] = []
+removeUntilNewline []            = []
 removeUntilNewline ('\n' : rest) = rest
-removeUntilNewline (_ : rest) = removeUntilNewline rest
+removeUntilNewline (_ : rest)    = removeUntilNewline rest
 
 addOneCharToken :: Char -> ScanResult -> Int -> Int -> ScanResult
 addOneCharToken char sr tokenOffset tokenLine =
@@ -310,6 +310,6 @@ table =
 
 addToResult :: ScanResult -> Either String Token -> ScanResult
 addToResult (Right tokens) (Right token) = Right $ token : tokens
-addToResult (Left errs) (Left err) = Left $ err : errs
-addToResult (Right _) (Left err) = Left [err]
-addToResult (Left errs) (Right _) = Left errs
+addToResult (Left errs) (Left err)       = Left $ err : errs
+addToResult (Right _) (Left err)         = Left [err]
+addToResult (Left errs) (Right _)        = Left errs

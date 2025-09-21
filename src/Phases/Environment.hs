@@ -1,8 +1,8 @@
 module Phases.Environment (Environment (..), defaultEnvironment, define, get, assign, envWithParent, getParent) where
 
 import qualified Data.Map as Map
-import Error
-import Tokens
+import           Error
+import           Tokens
 
 data Environment = Environment (Map.Map String Literal) (Maybe Environment)
 

@@ -1,7 +1,7 @@
 module Phases.Stmt (Stmt(..)) where
 
-import Phases.Expr
-import Tokens
+import           Phases.Expr
+import           Tokens
 
 data Stmt
   = Expression Expr

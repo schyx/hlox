@@ -1,8 +1,8 @@
 module ScannerTests (scannerTests) where
 
-import Phases.Scanner
-import Test.HUnit
-import Tokens
+import           Phases.Scanner
+import           Test.HUnit
+import           Tokens
 
 scannerTests :: Test
 scannerTests =

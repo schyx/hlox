@@ -1,13 +1,13 @@
 module Main (main) where
 
-import Phases.Environment
-import Phases.Interpreter
-import Phases.Parser
-import Phases.Scanner
-import Phases.Stmt
-import System.Environment
-import System.Exit
-import System.IO
+import           Phases.Environment
+import           Phases.Interpreter
+import           Phases.Parser
+import           Phases.Scanner
+import           Phases.Stmt
+import           System.Environment
+import           System.Exit
+import           System.IO
 
 data Errs
   = ScanOrParseErr [String]
@@ -47,7 +47,7 @@ runPrompt = go defaultEnvironment
                 toStderr [err]
                 go env
               Right (expr, [_eof]) -> case interpretExpr env expr of
-                (Left err, _) -> toStderr [err] >> go env
+                (Left err, _)  -> toStderr [err] >> go env
                 (Right lit, _) -> print lit >> go env
               Right (_, _) -> toStderr ["Too many tokens."] >> go env
 
@@ -74,7 +74,7 @@ runStatements env contents = do
         envOrErr <- go env stmts
         case envOrErr of
           Right newEnv -> return $ Right newEnv
-          Left err -> return $ Left $ RuntimeErr err
+          Left err     -> return $ Left $ RuntimeErr err
       Left errs -> do
         return $ Left $ ScanOrParseErr errs
     Left errs -> do
@@ -84,7 +84,7 @@ runStatements env contents = do
     go e (s : rest) = do
       newEnvOrErr <- runInterp e s
       case newEnvOrErr of
-        Left err -> return $ Left err
+        Left err     -> return $ Left err
         Right newEnv -> go newEnv rest
     go e [] = return $ Right e
 
