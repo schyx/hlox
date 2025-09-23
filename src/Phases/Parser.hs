@@ -227,7 +227,42 @@ unary toks = case matchFirst [MINUS, BANG] toks of
   (Right token, afterOp) -> do
     (right, leftovers) <- unary afterOp
     return (Unary token right, leftovers)
-  (Left (), afterCheck) -> primary afterCheck
+  (Left (), afterCheck) -> call afterCheck
+
+call :: [Token] -> ParseExpressionResult
+call tokens = do
+  (callee, afterCallee) <- primary tokens
+  let (isMatch, afterMatch) = matchFirst [LEFT_PAREN] afterCallee
+  case isMatch of
+    Left ()         -> return (callee, afterMatch)
+    Right leftParen -> do
+      (leftCall, afterLeftCall) <- finishCall callee leftParen afterMatch
+      callHelper leftCall afterLeftCall
+  where
+    callHelper :: Expr -> [Token] -> ParseExpressionResult
+    callHelper leftCall afterLeftCall =
+      case matchFirst [LEFT_PAREN] afterLeftCall of
+        (Left (), _)                      -> return (leftCall, afterLeftCall)
+        (Right leftParen, afterLeftParen) -> do
+          (newCall, afterNewCall) <- finishCall leftCall leftParen afterLeftParen
+          callHelper newCall afterNewCall
+
+finishCall :: Expr -> Token -> [Token] -> ParseExpressionResult
+finishCall callee leftParen argStart = case matchFirst [RIGHT_PAREN] argStart of
+  (Right _, afterRightParen) -> return (Call callee leftParen [], afterRightParen)
+  (Left (), _) -> do
+    (args, afterArgs) <- go argStart []
+    return (Call callee leftParen $ reverse args, afterArgs)
+  where
+    go :: [Token] -> [Expr] -> Either (String, [Token]) ([Expr], [Token])
+    go toks buildup = do
+      (expr, afterExpr) <- expression toks
+      let newBuildup = expr : buildup
+      case matchFirst [COMMA] afterExpr of
+        (Left (), _) -> do
+          (_, afterRightParen) <- consume RIGHT_PAREN afterExpr "Expect ')' after arguments."
+          return (newBuildup, afterRightParen)
+        (Right _, afterComma) -> go afterComma newBuildup
 
 primary :: [Token] -> ParseExpressionResult
 primary (token : rest)

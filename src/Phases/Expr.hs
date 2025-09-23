@@ -11,4 +11,5 @@ data Expr
   | Variable Token
   | OrExpr Expr Token Expr
   | AndExpr Expr Token Expr
+  | Call Expr Token [Expr]
   deriving (Show, Eq)
