@@ -125,7 +125,7 @@ varDeclarationStatement (_ : rest) inErrs = do
       SEMICOLON -> return (Var t1 (Primary Nil), afterEqual, identifierErrs) -- TODO: make the value here Nothing
       _ ->
         Left
-          ( [parseError t2 "Expect ';' after variable declaration."],
+          ( parseError t2 "Expect ';' after variable declaration." : identifierErrs,
             synchronize $ t2 : afterEqual
           )
     _ -> error "Should at least have EOF in varDeclarationStatement 2"
@@ -259,7 +259,10 @@ finishCall callee leftParen argStart inErrs = case matchFirst [RIGHT_PAREN] argS
   where
     go :: [Token] -> [Expr] -> [String] -> Either ([String], [Token]) ([Expr], [Token], [String])
     go toks buildup goErrs = do
-      (expr, afterExpr, exprErrs) <- expression toks goErrs
+      let argNumErr = if length buildup >= 255
+                        then parseError (head toks) "Can't have more than 255 elements" : goErrs
+                        else goErrs
+      (expr, afterExpr, exprErrs) <- expression toks argNumErr
       let newBuildup = expr : buildup
       case matchFirst [COMMA] afterExpr of
         (Left (), _) -> do
