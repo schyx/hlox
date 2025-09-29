@@ -290,7 +290,7 @@ matchFirst _     []         = error "Should have at least EOF in match"
 consume :: TokenType -> [Token] -> String -> [String] -> Either ([String], [Token]) (Token, [Token], [String])
 consume ttype (t1 : rest) errMsg inErrs = if tokenType t1 == ttype
   then Right (t1, rest, inErrs)
-  else Left (parseError t1 errMsg : inErrs, rest)
+  else Left (parseError t1 errMsg : inErrs, if tokenType t1 == EOF then t1 : rest else rest)
 consume _     []          _      _      = error "Should have at least EOF in consume"
 
 synchronize :: [Token] -> [Token]
