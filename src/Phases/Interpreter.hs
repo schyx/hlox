@@ -9,7 +9,7 @@ import           Tokens
 
 type InterpreterOutput = Either String ()
 
-type InterpretExprResult = (Either String Literal, Environment)
+type InterpretExprResult = (Either String Value, Environment)
 
 interpret :: Environment -> Stmt -> IO (Environment, InterpreterOutput)
 interpret env (Print expr) = case interpretExpr env expr of
@@ -57,6 +57,32 @@ interpret env (While condition whileBlock) =
     (Left err, newEnv) -> return (newEnv, Left err)
 
 interpretExpr :: Environment -> Expr -> InterpretExprResult
+interpretExpr env (Call callee paren args) =
+  case interpretExpr env callee of
+    (Right lit, newEnv) -> case interpretExprs newEnv args of
+      (Right interpArgs, afterArgsEnv) -> case lit of
+        c@(VCall arity _) -> if arity == length interpArgs
+          then call env c interpArgs
+          else
+          (
+            Left
+              $ runtimeError
+              paren
+              $ "Expected " ++ show arity ++ " arguments but got " ++ show (length interpArgs) ++ ".",
+            afterArgsEnv
+          )
+        _ -> (Left $ runtimeError paren "Can only call functions and classes.", afterArgsEnv)
+      (Left err, errEnv)               -> (Left err, errEnv)
+    err -> err
+  where
+    interpretExprs :: Environment -> [Expr] -> (Either String [Value], Environment)
+    interpretExprs argsEnv []             = (Right [], argsEnv)
+    interpretExprs argsEnv (expr : exprs) =
+      case interpretExpr argsEnv expr of
+        (Right lit, exprEnv) -> case interpretExprs exprEnv exprs of
+          (Right lits, exprsEnv) -> (Right $ lit : lits, exprsEnv)
+          (Left err, errEnv)     -> (Left err, errEnv)
+        (Left err, errEnv) -> (Left err, errEnv)
 interpretExpr interp (Assign name value) =
   case interpretExpr interp value of
     (Right lit, newEnv) -> case assign newEnv name lit of
@@ -73,25 +99,25 @@ interpretExpr interp (Binary left operator right) =
           first
             | tokenType operator `elem` [BANG_EQUAL, EQUAL_EQUAL] =
                 Right $
-                  Boolean
+                  VBoolean
                     ( if tokenType operator == EQUAL_EQUAL
                         then leftLiteral == rightLiteral
                         else leftLiteral /= rightLiteral
                     )
             | tokenType operator == PLUS = case toNumberPair leftLiteral rightLiteral operator of
-                Right (leftn, rightn) -> Right $ Number $ leftn + rightn
+                Right (leftn, rightn) -> Right $ VNumber $ leftn + rightn
                 Left _ -> case (leftLiteral, rightLiteral) of
-                  (Str lefts, Str rights) -> Right $ Str $ lefts ++ rights
+                  (VStr lefts, VStr rights) -> Right $ VStr $ lefts ++ rights
                   _ -> Left $ runtimeError operator "Operands must be two numbers or two strings."
             | Map.member (tokenType operator) numericBinaryTable =
                 case toNumberPair leftLiteral rightLiteral operator of
                   Right (leftn, rightn) ->
-                    Right $ Number $ (numericBinaryTable Map.! tokenType operator) leftn rightn
+                    Right $ VNumber $ (numericBinaryTable Map.! tokenType operator) leftn rightn
                   Left err -> Left err
             | Map.member (tokenType operator) booleanBinaryTable =
                 case toNumberPair leftLiteral rightLiteral operator of
                   Right (leftn, rightn) ->
-                    Right $ Boolean $ (booleanBinaryTable Map.! tokenType operator) leftn rightn
+                    Right $ VBoolean $ (booleanBinaryTable Map.! tokenType operator) leftn rightn
                   Left err -> Left err
             | otherwise = error "Unexpected opType when interpreting binary"
           booleanBinaryTable =
@@ -109,9 +135,9 @@ interpretExpr interp (Binary left operator right) =
               ]
 interpretExpr interp (Unary operator expr) = case interpretExpr interp expr of
   (Right lit, newInterp) -> case tokenType operator of
-    BANG -> (Right $ Boolean $ not $ isTruthy lit, newInterp)
+    BANG -> (Right $ VBoolean $ not $ isTruthy lit, newInterp)
     MINUS -> case toNumber lit operator of
-      Right n  -> (Right $ Number $ -n, newInterp)
+      Right n  -> (Right $ VNumber $ -n, newInterp)
       Left err -> (Left err, newInterp)
     _ -> error "unexpected opType when interpreting unary"
   (Left err, newInterp) -> (Left err, newInterp)
@@ -134,18 +160,18 @@ interpretExpr interp (OrExpr left _ right) =
       then (Right lit, newEnv)
       else interpretExpr newEnv right
     err -> err
-interpretExpr interp (Primary lit) = (Right lit, interp)
+interpretExpr interp (Primary lit) = (Right $ fromLiteral lit, interp)
 
-toNumberPair :: Literal -> Literal -> Token -> Either String (Double, Double)
+toNumberPair :: Value -> Value -> Token -> Either String (Double, Double)
 toNumberPair left right op = case (toNumber left op, toNumber right op) of
   (Right l, Right r) -> Right (l, r)
   _                  -> Left $ runtimeError op "Operands must be numbers."
 
-toNumber :: Literal -> Token -> Either String Double
-toNumber (Number n) _ = Right n
-toNumber _ token      = Left $ runtimeError token "Operand must be a number."
+toNumber :: Value -> Token -> Either String Double
+toNumber (VNumber n) _ = Right n
+toNumber _ token       = Left $ runtimeError token "Operand must be a number."
 
-isTruthy :: Literal -> Bool
-isTruthy Nil         = False
-isTruthy (Boolean b) = b
-isTruthy _           = True
+isTruthy :: Value -> Bool
+isTruthy VNil         = False
+isTruthy (VBoolean b) = b
+isTruthy _            = True
