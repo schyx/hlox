@@ -4,7 +4,6 @@ module Phases.Environment (
   define, get, assign,
   envWithParent, getParent,
   Value(..), fromLiteral,
-  call
 ) where
 
 import qualified Data.Map as Map
@@ -45,9 +44,6 @@ get (Environment table _ parent) var
   | Just val <- Map.lookup (lexeme var) table = Right val
   | Just pEnv <- parent = get pEnv var
   | Nothing <- parent = Left $ runtimeError var ("Undefined variable '" ++ lexeme var ++ "'.")
-
-call :: Environment -> Value -> [Value] -> (Either String Value, Environment)
-call = undefined
 
 data Value
   = VNumber Double

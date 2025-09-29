@@ -45,6 +45,7 @@ library
   build-depends:
       base >=4.7 && <5
     , containers
+    , mtl >=2.3
   default-language: Haskell2010
 
 executable hlox-exe
@@ -60,6 +61,7 @@ executable hlox-exe
       base >=4.7 && <5
     , containers
     , hlox
+    , mtl >=2.3
   default-language: Haskell2010
 
 test-suite hlox-test
@@ -78,4 +80,5 @@ test-suite hlox-test
     , base >=4.7 && <5
     , containers
     , hlox
+    , mtl >=2.3
   default-language: Haskell2010
