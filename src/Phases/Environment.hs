@@ -8,9 +8,13 @@ module Phases.Environment (
   getParent,
   Value (..),
   fromLiteral,
+  getFunc,
 ) where
 
+import Control.Monad.Except (ExceptT (..))
+import Control.Monad.IO.Class (MonadIO (liftIO))
 import qualified Data.Map as Map
+import Data.Time.Clock.POSIX (getPOSIXTime)
 import Error
 import Numeric
 import Tokens
@@ -18,11 +22,37 @@ import Tokens
 data Environment
   = Environment
       (Map.Map String Value)
-      (Map.Map Value (Environment -> [Value] -> Value))
+      (Map.Map Value (Environment -> [Value] -> ExceptT String IO (Value, Environment)))
       (Maybe Environment)
 
 defaultEnvironment :: Environment
-defaultEnvironment = Environment Map.empty Map.empty Nothing
+defaultEnvironment =
+  let leftParen =
+        MkToken
+          { tokenType = LEFT_PAREN
+          , offset = 0
+          , literal = None
+          , line = 0
+          , lexeme = "clock"
+          }
+      clock = VCall 0 leftParen "<native fn>"
+      globals =
+        Map.fromList
+          [
+            ( "clock"
+            , clock
+            )
+          ]
+      globalDefs =
+        Map.fromList
+          [
+            ( clock
+            , \env _ -> do
+                time <- liftIO getPOSIXTime
+                return (VNumber (realToFrac time :: Double), env)
+            )
+          ]
+   in Environment globals globalDefs Nothing
 
 envWithParent :: Environment -> Environment
 envWithParent = Environment Map.empty Map.empty . Just
@@ -49,12 +79,19 @@ get (Environment table _ parent) var
   | Just pEnv <- parent = get pEnv var
   | Nothing <- parent = Left $ runtimeError var ("Undefined variable '" ++ lexeme var ++ "'.")
 
+getFunc :: Environment -> Value -> (Environment -> [Value] -> ExceptT String IO (Value, Environment))
+getFunc (Environment _ funcTable Nothing) val = funcTable Map.! val
+getFunc (Environment _ funcTable (Just parent)) val =
+  case Map.lookup val funcTable of
+    Nothing -> getFunc parent val
+    Just f -> f
+
 data Value
   = VNumber Double
   | VStr String
   | VBoolean Bool
   | VNil
-  | VCall Int Token
+  | VCall Int Token String
   deriving (Eq, Ord)
 
 instance Show Value where -- TODO: change literal to not include identifiers
@@ -68,6 +105,7 @@ instance Show Value where -- TODO: change literal to not include identifiers
   show (VStr s) = s
   show (VBoolean b) = if b then "true" else "false"
   show VNil = "nil"
+  show (VCall _ _ s) = s
 
 fromLiteral :: Literal -> Value
 fromLiteral (Tokens.Number n) = VNumber n

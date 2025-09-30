@@ -53,7 +53,7 @@ interpretExpr env (Call callee paren args) = do
   (val, newEnv) <- interpretExpr env callee
   (params, afterParamsEnv) <- interpretExprs newEnv args
   case val of
-    c@(VCall arity _) ->
+    c@(VCall arity _ _) ->
       if arity == length params
         then call afterParamsEnv c params
         else
@@ -144,7 +144,9 @@ interpretExpr env (OrExpr left _ right) = do
 interpretExpr env (Primary lit) = return (fromLiteral lit, env)
 
 call :: Environment -> Value -> [Value] -> InterpretExprResult
-call = undefined
+call env callee args =
+  let func = getFunc env callee
+   in func env args
 
 toNumberPair :: Value -> Value -> Token -> Either String (Double, Double)
 toNumberPair left right op = case (toNumber left op, toNumber right op) of
