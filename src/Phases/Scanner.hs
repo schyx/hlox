@@ -1,9 +1,9 @@
 module Phases.Scanner (scanTokens, ScanResult) where
 
-import           Data.Char
-import qualified Data.Map  as Map
-import           Error
-import           Tokens
+import Data.Char
+import qualified Data.Map as Map
+import Error
+import Tokens
 
 type ScanResult = Either [String] [Token]
 
@@ -12,7 +12,7 @@ scanTokens :: String -> ScanResult
 scanTokens contents =
   case scanHelper contents 1 1 $ Right [] of
     -- reverse the list because we build it up in reverse order
-    Left errs    -> Left $ reverse errs
+    Left errs -> Left $ reverse errs
     Right tokens -> Right $ reverse tokens
 
 scanHelper :: String -> Int -> Int -> ScanResult -> ScanResult
@@ -20,11 +20,11 @@ scanHelper [] currentLine currentOffset currentTokens =
   addToResult currentTokens $
     Right
       MkToken
-        { tokenType = EOF,
-          offset = currentOffset,
-          literal = None,
-          line = currentLine,
-          lexeme = ""
+        { tokenType = EOF
+        , offset = currentOffset
+        , literal = None
+        , line = currentLine
+        , lexeme = ""
         }
 scanHelper (c : rest) currentLine currentOffset currentTokens
   -- one char tokens
@@ -46,11 +46,11 @@ scanHelper (c : rest) currentLine currentOffset currentTokens
             ( addToResult currentTokens $
                 Right
                   MkToken
-                    { tokenType = ttype,
-                      offset = currentOffset,
-                      literal = None,
-                      line = currentLine,
-                      lexeme = tokenLexeme
+                    { tokenType = ttype
+                    , offset = currentOffset
+                    , literal = None
+                    , line = currentLine
+                    , lexeme = tokenLexeme
                     }
             )
   -- comments and divide
@@ -67,11 +67,11 @@ scanHelper (c : rest) currentLine currentOffset currentTokens
           addToResult currentTokens $
             Right
               MkToken
-                { tokenType = SLASH,
-                  offset = currentOffset,
-                  literal = None,
-                  line = currentLine,
-                  lexeme = "/"
+                { tokenType = SLASH
+                , offset = currentOffset
+                , literal = None
+                , line = currentLine
+                , lexeme = "/"
                 }
   -- numbers
   | isDigit c =
@@ -80,11 +80,11 @@ scanHelper (c : rest) currentLine currentOffset currentTokens
             addToResult currentTokens $
               Right
                 MkToken
-                  { tokenType = NUMBER,
-                    offset = currentOffset,
-                    literal = Number num,
-                    line = currentLine,
-                    lexeme = numLexeme
+                  { tokenType = NUMBER
+                  , offset = currentOffset
+                  , literal = Number num
+                  , line = currentLine
+                  , lexeme = numLexeme
                   }
   -- strings
   | c == '"' =
@@ -110,150 +110,150 @@ scanHelper (c : rest) currentLine currentOffset currentTokens
 
 scanBlockComment :: String -> Int -> Int -> Either String (Int, Int, String)
 scanBlockComment rest currentLine currentOffset = helper rest currentLine currentOffset 0
-  where
-    helper :: String -> Int -> Int -> Int -> Either String (Int, Int, String)
-    helper ('/' : '*' : leftovers) helperLine helperOffset numOpening =
-      helper leftovers helperLine (helperOffset + 2) (numOpening + 1)
-    helper ('*' : '/' : leftovers) helperLine helperOffset numOpening =
-      if numOpening == 1
-        then Right (helperLine, helperOffset + 2, leftovers)
-        else helper leftovers helperLine (helperOffset + 2) (numOpening - 1)
-    helper ('\n' : c : leftovers) helperLine _ numOpening =
-      helper (c : leftovers) (helperLine + 1) 1 numOpening
-    helper (_ : c : leftovers) helperLine helperOffset numOpening =
-      helper (c : leftovers) helperLine (helperOffset + 1) numOpening
-    helper _ helperLine _ _ = Left $ report helperLine "" "Unterminated block comment."
+ where
+  helper :: String -> Int -> Int -> Int -> Either String (Int, Int, String)
+  helper ('/' : '*' : leftovers) helperLine helperOffset numOpening =
+    helper leftovers helperLine (helperOffset + 2) (numOpening + 1)
+  helper ('*' : '/' : leftovers) helperLine helperOffset numOpening =
+    if numOpening == 1
+      then Right (helperLine, helperOffset + 2, leftovers)
+      else helper leftovers helperLine (helperOffset + 2) (numOpening - 1)
+  helper ('\n' : c : leftovers) helperLine _ numOpening =
+    helper (c : leftovers) (helperLine + 1) 1 numOpening
+  helper (_ : c : leftovers) helperLine helperOffset numOpening =
+    helper (c : leftovers) helperLine (helperOffset + 1) numOpening
+  helper _ helperLine _ _ = Left $ report helperLine "" "Unterminated block comment."
 
 scanString :: String -> Int -> Int -> Either String (Token, String, Int, Int)
 scanString rest startLine startOffset = helper [] rest startLine $ startOffset + 1
-  where
-    helper :: String -> String -> Int -> Int -> Either String (Token, String, Int, Int)
-    helper _ [] helperLine _ = Left $ report helperLine "" "Unterminated string."
-    helper buildup ('"' : leftovers) helperLine helperOffset =
-      getRightReturn buildup leftovers helperLine $ helperOffset + 1 -- account for "
-    helper buildup ('\n' : leftovers) helperLine _ =
-      helper ('\n' : buildup) leftovers (helperLine + 1) 1
-    helper buildup (currentChar : leftovers) helperLine helperOffset =
-      helper (currentChar : buildup) leftovers helperLine (helperOffset + 1)
-    getRightReturn buildup leftovers helperLine helperOffset =
-      let str = reverse buildup
-       in Right
-            ( MkToken
-                { tokenType = STRING,
-                  offset = startOffset,
-                  literal = Str str,
-                  line = startLine,
-                  lexeme = "\"" ++ str ++ "\""
-                },
-              leftovers,
-              helperLine,
-              helperOffset
-            )
+ where
+  helper :: String -> String -> Int -> Int -> Either String (Token, String, Int, Int)
+  helper _ [] helperLine _ = Left $ report helperLine "" "Unterminated string."
+  helper buildup ('"' : leftovers) helperLine helperOffset =
+    getRightReturn buildup leftovers helperLine $ helperOffset + 1 -- account for "
+  helper buildup ('\n' : leftovers) helperLine _ =
+    helper ('\n' : buildup) leftovers (helperLine + 1) 1
+  helper buildup (currentChar : leftovers) helperLine helperOffset =
+    helper (currentChar : buildup) leftovers helperLine (helperOffset + 1)
+  getRightReturn buildup leftovers helperLine helperOffset =
+    let str = reverse buildup
+     in Right
+          ( MkToken
+              { tokenType = STRING
+              , offset = startOffset
+              , literal = Str str
+              , line = startLine
+              , lexeme = "\"" ++ str ++ "\""
+              }
+          , leftovers
+          , helperLine
+          , helperOffset
+          )
 
 scanIdentifier :: Char -> Int -> Int -> String -> (Token, String, Int)
 scanIdentifier c identifierLine identifierOffset = helper [c]
-  where
-    helper :: String -> String -> (Token, String, Int)
-    helper buildup [] = getReturn buildup []
-    helper buildup (currentChar : leftovers) =
-      if isAlphaNum currentChar || currentChar == '_'
-        then helper (currentChar : buildup) leftovers
-        else getReturn buildup (currentChar : leftovers)
-    getReturn buildup leftovers =
-      let identifier = reverse buildup
-       in case Map.lookup identifier identifierTable of
-            Nothing ->
-              ( MkToken
-                  { tokenType = IDENTIFIER,
-                    offset = identifierOffset,
-                    literal = Identifier identifier,
-                    line = identifierLine,
-                    lexeme = identifier
-                  },
-                leftovers,
-                length buildup
-              )
-            Just NIL ->
-              ( MkToken
-                  { tokenType = NIL,
-                    offset = identifierOffset,
-                    literal = Nil,
-                    line = identifierLine,
-                    lexeme = identifier
-                  },
-                leftovers,
-                length buildup
-              )
-            Just TRUE ->
-              ( MkToken
-                  { tokenType = TRUE,
-                    offset = identifierOffset,
-                    literal = Boolean True,
-                    line = identifierLine,
-                    lexeme = identifier
-                  },
-                leftovers,
-                length buildup
-              )
-            Just FALSE ->
-              ( MkToken
-                  { tokenType = FALSE,
-                    offset = identifierOffset,
-                    literal = Boolean False,
-                    line = identifierLine,
-                    lexeme = identifier
-                  },
-                leftovers,
-                length buildup
-              )
-            Just ttype ->
-              ( MkToken
-                  { tokenType = ttype,
-                    offset = identifierOffset,
-                    literal = None,
-                    line = identifierLine,
-                    lexeme = identifier
-                  },
-                leftovers,
-                length buildup
-              )
-    identifierTable =
-      Map.fromList
-        [ ("and", AND),
-          ("class", CLASS),
-          ("else", ELSE),
-          ("false", FALSE),
-          ("fun", FUN),
-          ("for", FOR),
-          ("if", IF),
-          ("nil", NIL),
-          ("or", OR),
-          ("print", PRINT),
-          ("return", RETURN),
-          ("super", SUPER),
-          ("this", THIS),
-          ("true", TRUE),
-          ("var", VAR),
-          ("while", WHILE)
-        ]
+ where
+  helper :: String -> String -> (Token, String, Int)
+  helper buildup [] = getReturn buildup []
+  helper buildup (currentChar : leftovers) =
+    if isAlphaNum currentChar || currentChar == '_'
+      then helper (currentChar : buildup) leftovers
+      else getReturn buildup (currentChar : leftovers)
+  getReturn buildup leftovers =
+    let identifier = reverse buildup
+     in case Map.lookup identifier identifierTable of
+          Nothing ->
+            ( MkToken
+                { tokenType = IDENTIFIER
+                , offset = identifierOffset
+                , literal = Identifier identifier
+                , line = identifierLine
+                , lexeme = identifier
+                }
+            , leftovers
+            , length buildup
+            )
+          Just NIL ->
+            ( MkToken
+                { tokenType = NIL
+                , offset = identifierOffset
+                , literal = Nil
+                , line = identifierLine
+                , lexeme = identifier
+                }
+            , leftovers
+            , length buildup
+            )
+          Just TRUE ->
+            ( MkToken
+                { tokenType = TRUE
+                , offset = identifierOffset
+                , literal = Boolean True
+                , line = identifierLine
+                , lexeme = identifier
+                }
+            , leftovers
+            , length buildup
+            )
+          Just FALSE ->
+            ( MkToken
+                { tokenType = FALSE
+                , offset = identifierOffset
+                , literal = Boolean False
+                , line = identifierLine
+                , lexeme = identifier
+                }
+            , leftovers
+            , length buildup
+            )
+          Just ttype ->
+            ( MkToken
+                { tokenType = ttype
+                , offset = identifierOffset
+                , literal = None
+                , line = identifierLine
+                , lexeme = identifier
+                }
+            , leftovers
+            , length buildup
+            )
+  identifierTable =
+    Map.fromList
+      [ ("and", AND)
+      , ("class", CLASS)
+      , ("else", ELSE)
+      , ("false", FALSE)
+      , ("fun", FUN)
+      , ("for", FOR)
+      , ("if", IF)
+      , ("nil", NIL)
+      , ("or", OR)
+      , ("print", PRINT)
+      , ("return", RETURN)
+      , ("super", SUPER)
+      , ("this", THIS)
+      , ("true", TRUE)
+      , ("var", VAR)
+      , ("while", WHILE)
+      ]
 
 scanNumber :: Char -> String -> (Double, String, Int, String)
 scanNumber c = helper [c] False
-  where
-    helper :: String -> Bool -> String -> (Double, String, Int, String)
-    helper buildup _ [] = getReturn buildup []
-    helper buildup True ('.' : leftovers) = getReturn buildup ('.' : leftovers)
-    helper buildup False ['.'] = getReturn buildup ['.']
-    helper buildup False ('.' : c2 : leftovers)
-      | isDigit c2 = helper ('.' : buildup) True (c2 : leftovers)
-      | otherwise = getReturn buildup ('.' : leftovers)
-    helper buildup seenDot (currentChar : leftovers) =
-      if isDigit currentChar
-        then helper (currentChar : buildup) seenDot leftovers
-        else getReturn buildup (currentChar : leftovers)
-    getReturn buildup leftovers =
-      let numString = reverse buildup
-       in (read numString :: Double, leftovers, length buildup, numString)
+ where
+  helper :: String -> Bool -> String -> (Double, String, Int, String)
+  helper buildup _ [] = getReturn buildup []
+  helper buildup True ('.' : leftovers) = getReturn buildup ('.' : leftovers)
+  helper buildup False ['.'] = getReturn buildup ['.']
+  helper buildup False ('.' : c2 : leftovers)
+    | isDigit c2 = helper ('.' : buildup) True (c2 : leftovers)
+    | otherwise = getReturn buildup ('.' : leftovers)
+  helper buildup seenDot (currentChar : leftovers) =
+    if isDigit currentChar
+      then helper (currentChar : buildup) seenDot leftovers
+      else getReturn buildup (currentChar : leftovers)
+  getReturn buildup leftovers =
+    let numString = reverse buildup
+     in (read numString :: Double, leftovers, length buildup, numString)
 
 addPotentialTwoCharToken :: Char -> String -> (TokenType, String, Int, String)
 addPotentialTwoCharToken c rest
@@ -262,16 +262,16 @@ addPotentialTwoCharToken c rest
   | (c2 : leftovers) <- rest, c == '>' && c2 == '=' = (GREATER_EQUAL, leftovers, 2, ">=")
   | (c2 : leftovers) <- rest, c == '<' && c2 == '=' = (LESS_EQUAL, leftovers, 2, "<=")
   | otherwise = singleToken c
-  where
-    singleToken char =
-      case Map.lookup char table of
-        Nothing          -> error "bruh"
-        Just constructor -> (constructor, rest, 1, [char])
+ where
+  singleToken char =
+    case Map.lookup char table of
+      Nothing -> error "bruh"
+      Just constructor -> (constructor, rest, 1, [char])
 
 removeUntilNewline :: String -> String
-removeUntilNewline []            = []
+removeUntilNewline [] = []
 removeUntilNewline ('\n' : rest) = rest
-removeUntilNewline (_ : rest)    = removeUntilNewline rest
+removeUntilNewline (_ : rest) = removeUntilNewline rest
 
 addOneCharToken :: Char -> ScanResult -> Int -> Int -> ScanResult
 addOneCharToken char sr tokenOffset tokenLine =
@@ -282,34 +282,34 @@ addOneCharToken char sr tokenOffset tokenLine =
         sr
         $ Right
         $ MkToken
-          { tokenType = constructor,
-            offset = tokenOffset,
-            literal = None,
-            line = tokenLine,
-            lexeme = [char]
+          { tokenType = constructor
+          , offset = tokenOffset
+          , literal = None
+          , line = tokenLine
+          , lexeme = [char]
           }
 
 table :: Map.Map Char TokenType
 table =
   Map.fromList
-    [ ('(', LEFT_PAREN),
-      (')', RIGHT_PAREN),
-      ('{', LEFT_BRACE),
-      ('}', RIGHT_BRACE),
-      (',', COMMA),
-      ('.', DOT),
-      ('-', MINUS),
-      ('+', PLUS),
-      (';', SEMICOLON),
-      ('*', STAR),
-      ('!', BANG),
-      ('=', EQUAL),
-      ('>', GREATER),
-      ('<', LESS)
+    [ ('(', LEFT_PAREN)
+    , (')', RIGHT_PAREN)
+    , ('{', LEFT_BRACE)
+    , ('}', RIGHT_BRACE)
+    , (',', COMMA)
+    , ('.', DOT)
+    , ('-', MINUS)
+    , ('+', PLUS)
+    , (';', SEMICOLON)
+    , ('*', STAR)
+    , ('!', BANG)
+    , ('=', EQUAL)
+    , ('>', GREATER)
+    , ('<', LESS)
     ]
 
 addToResult :: ScanResult -> Either String Token -> ScanResult
 addToResult (Right tokens) (Right token) = Right $ token : tokens
-addToResult (Left errs) (Left err)       = Left $ err : errs
-addToResult (Right _) (Left err)         = Left [err]
-addToResult (Left errs) (Right _)        = Left errs
+addToResult (Left errs) (Left err) = Left $ err : errs
+addToResult (Right _) (Left err) = Left [err]
+addToResult (Left errs) (Right _) = Left errs

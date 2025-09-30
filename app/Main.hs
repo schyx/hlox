@@ -1,14 +1,14 @@
 module Main (main) where
 
-import           Control.Monad.Except   (runExceptT)
-import           Phases.Environment
-import           Phases.Interpreter
-import           Phases.Parser
-import           Phases.Scanner
-import           Phases.Stmt
-import           System.Environment
-import           System.Exit
-import           System.IO
+import Control.Monad.Except (runExceptT)
+import Phases.Environment
+import Phases.Interpreter
+import Phases.Parser
+import Phases.Scanner
+import Phases.Stmt
+import System.Environment
+import System.Exit
+import System.IO
 
 data Errs
   = ScanOrParseErr [String]
@@ -29,30 +29,30 @@ checkArgs _ = do
 -- | Creates Lox repl
 runPrompt :: IO () -- deal with environment persisting
 runPrompt = go defaultEnvironment
-  where
-    go env = do
-      putStr "> "
-      hFlush stdout -- required to get the `>` to show up
-      input <- getLine
-      errOrEnv <- runStatements env input
-      case errOrEnv of
-        Right newEnv -> go newEnv
-        Left _ -> do
-          let scanResult = scanTokens input
-          case scanResult of
-            Left errs -> do
-              toStderr errs
+ where
+  go env = do
+    putStr "> "
+    hFlush stdout -- required to get the `>` to show up
+    input <- getLine
+    errOrEnv <- runStatements env input
+    case errOrEnv of
+      Right newEnv -> go newEnv
+      Left _ -> do
+        let scanResult = scanTokens input
+        case scanResult of
+          Left errs -> do
+            toStderr errs
+            go env
+          Right tokens -> case expression tokens [] of
+            Left (err, _) -> do
+              toStderr err
               go env
-            Right tokens -> case expression tokens [] of
-              Left (err, _) -> do
-                toStderr err
-                go env
-              Right (expr, [_eof], _) -> do
-                exprOutput <- runExceptT $ interpretExpr env expr
-                case exprOutput of
-                  Left err       -> toStderr [err] >> go env
-                  Right (lit, _) -> print lit >> go env
-              Right (_, _, _) -> toStderr ["Too many tokens."] >> go env
+            Right (expr, [_eof], _) -> do
+              exprOutput <- runExceptT $ interpretExpr env expr
+              case exprOutput of
+                Left err -> toStderr [err] >> go env
+                Right (lit, _) -> print lit >> go env
+            Right (_, _, _) -> toStderr ["Too many tokens."] >> go env
 
 -- | Runs a Lox file
 runFile :: String -> IO ()
@@ -77,19 +77,19 @@ runStatements env contents = do
         envOrErr <- go env stmts
         case envOrErr of
           Right newEnv -> return $ Right newEnv
-          Left err     -> return $ Left $ RuntimeErr err
+          Left err -> return $ Left $ RuntimeErr err
       Left errs -> do
         return $ Left $ ScanOrParseErr errs
     Left errs -> do
       return $ Left $ ScanOrParseErr errs
-  where
-    go :: Environment -> [Stmt] -> IO (Either String Environment)
-    go e (s : rest) = do
-      newEnvOrErr <- runInterp e s
-      case newEnvOrErr of
-        Left err     -> return $ Left err
-        Right newEnv -> go newEnv rest
-    go e [] = return $ Right e
+ where
+  go :: Environment -> [Stmt] -> IO (Either String Environment)
+  go e (s : rest) = do
+    newEnvOrErr <- runInterp e s
+    case newEnvOrErr of
+      Left err -> return $ Left err
+      Right newEnv -> go newEnv rest
+  go e [] = return $ Right e
 
 toStderr :: [String] -> IO ()
 toStderr [] = return ()

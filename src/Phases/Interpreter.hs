@@ -1,13 +1,13 @@
 module Phases.Interpreter (interpret, InterpreterOutput, interpretExpr) where
 
-import           Control.Monad.Except   (ExceptT, throwError)
-import           Control.Monad.IO.Class (liftIO)
-import qualified Data.Map               as Map
-import           Error
-import           Phases.Environment
-import           Phases.Expr
-import           Phases.Stmt
-import           Tokens
+import Control.Monad.Except (ExceptT, throwError)
+import Control.Monad.IO.Class (liftIO)
+import qualified Data.Map as Map
+import Error
+import Phases.Environment
+import Phases.Expr
+import Phases.Stmt
+import Tokens
 
 type InterpretExprResult = ExceptT String IO (Value, Environment)
 
@@ -28,12 +28,12 @@ interpret env (Block stmts) = do
   let blockEnv = envWithParent env
   newBlockEnv <- execBlock blockEnv stmts
   return $ getParent newBlockEnv
-  where
-    execBlock :: Environment -> [Stmt] -> ExceptT String IO Environment
-    execBlock blockEnv (s : sOther) = do
-      newBlockEnv <- interpret blockEnv s
-      execBlock newBlockEnv sOther
-    execBlock blockEnv [] = return blockEnv
+ where
+  execBlock :: Environment -> [Stmt] -> ExceptT String IO Environment
+  execBlock blockEnv (s : sOther) = do
+    newBlockEnv <- interpret blockEnv s
+    execBlock newBlockEnv sOther
+  execBlock blockEnv [] = return blockEnv
 interpret env (If condition ifBranch (Just elseBranch)) = do
   (val, newEnv) <- interpretExpr env condition
   interpret newEnv (if isTruthy val then ifBranch else elseBranch)
@@ -53,82 +53,84 @@ interpretExpr env (Call callee paren args) = do
   (val, newEnv) <- interpretExpr env callee
   (params, afterParamsEnv) <- interpretExprs newEnv args
   case val of
-    c@(VCall arity _) -> if arity == length params
-      then call afterParamsEnv c params
-      else throwError
-        $ runtimeError
-          paren
-          $ "Expected " ++ show arity ++ " arguments but got " ++ show (length params) ++ "."
+    c@(VCall arity _) ->
+      if arity == length params
+        then call afterParamsEnv c params
+        else
+          throwError
+            $ runtimeError
+              paren
+            $ "Expected " ++ show arity ++ " arguments but got " ++ show (length params) ++ "."
     _ -> throwError $ runtimeError paren "Can only call functions and classes."
-  where
-    interpretExprs :: Environment -> [Expr] -> ExceptT String IO ([Value], Environment)
-    interpretExprs argsEnv []             = return ([], argsEnv)
-    interpretExprs argsEnv (expr : exprs) = do
-      (val, newEnv) <- interpretExpr argsEnv expr
-      (params, afterParamsEnv) <- interpretExprs newEnv exprs
-      return (val : params, afterParamsEnv)
+ where
+  interpretExprs :: Environment -> [Expr] -> ExceptT String IO ([Value], Environment)
+  interpretExprs argsEnv [] = return ([], argsEnv)
+  interpretExprs argsEnv (expr : exprs) = do
+    (val, newEnv) <- interpretExpr argsEnv expr
+    (params, afterParamsEnv) <- interpretExprs newEnv exprs
+    return (val : params, afterParamsEnv)
 interpretExpr env (Assign name value) = do
   (val, newEnv) <- interpretExpr env value
   case assign newEnv name val of
     (Right _, assignedEnv) -> return (val, assignedEnv)
-    (Left err, _)          -> throwError err
+    (Left err, _) -> throwError err
 interpretExpr env (Binary left operator right) = do
   (leftVal, afterLeftEnv) <- interpretExpr env left
   (rightVal, afterRightEnv) <- interpretExpr afterLeftEnv right
   output <- getOutput leftVal rightVal
   return (output, afterRightEnv)
-  where
-    getOutput :: Value -> Value -> ExceptT String IO Value
-    getOutput leftVal rightVal
-      | tokenType operator `elem` [BANG_EQUAL, EQUAL_EQUAL] =
-          return $
-            VBoolean
-              ( if tokenType operator == EQUAL_EQUAL
-                  then leftVal == rightVal
-                  else leftVal /= rightVal
-              )
-      | tokenType operator == PLUS = case toNumberPair leftVal rightVal operator of
-          Right (leftn, rightn) -> return $ VNumber $ leftn + rightn
-          Left _ -> case (leftVal, rightVal) of
-            (VStr lefts, VStr rights) -> return $ VStr $ lefts ++ rights
-            _ -> throwError $ runtimeError operator "Operands must be two numbers or two strings."
-      | Map.member (tokenType operator) numericBinaryTable =
-          case toNumberPair leftVal rightVal operator of
-            Right (leftn, rightn) ->
-              return $ VNumber $ (numericBinaryTable Map.! tokenType operator) leftn rightn
-            Left err -> throwError err
-      | Map.member (tokenType operator) booleanBinaryTable =
-          case toNumberPair leftVal rightVal operator of
-            Right (leftn, rightn) ->
-              return $ VBoolean $ (booleanBinaryTable Map.! tokenType operator) leftn rightn
-            Left err -> throwError err
-      | otherwise = error "Unexpected opType when interpreting binary"
-    booleanBinaryTable =
-      Map.fromList
-        [ (LESS, (<)),
-          (LESS_EQUAL, (<=)),
-          (GREATER, (>)),
-          (GREATER_EQUAL, (>=))
-        ]
-    numericBinaryTable =
-      Map.fromList
-        [ (STAR, (*)),
-          (SLASH, (/)),
-          (MINUS, (-))
-        ]
-interpretExpr env (Unary operator expr) = do 
+ where
+  getOutput :: Value -> Value -> ExceptT String IO Value
+  getOutput leftVal rightVal
+    | tokenType operator `elem` [BANG_EQUAL, EQUAL_EQUAL] =
+        return $
+          VBoolean
+            ( if tokenType operator == EQUAL_EQUAL
+                then leftVal == rightVal
+                else leftVal /= rightVal
+            )
+    | tokenType operator == PLUS = case toNumberPair leftVal rightVal operator of
+        Right (leftn, rightn) -> return $ VNumber $ leftn + rightn
+        Left _ -> case (leftVal, rightVal) of
+          (VStr lefts, VStr rights) -> return $ VStr $ lefts ++ rights
+          _ -> throwError $ runtimeError operator "Operands must be two numbers or two strings."
+    | Map.member (tokenType operator) numericBinaryTable =
+        case toNumberPair leftVal rightVal operator of
+          Right (leftn, rightn) ->
+            return $ VNumber $ (numericBinaryTable Map.! tokenType operator) leftn rightn
+          Left err -> throwError err
+    | Map.member (tokenType operator) booleanBinaryTable =
+        case toNumberPair leftVal rightVal operator of
+          Right (leftn, rightn) ->
+            return $ VBoolean $ (booleanBinaryTable Map.! tokenType operator) leftn rightn
+          Left err -> throwError err
+    | otherwise = error "Unexpected opType when interpreting binary"
+  booleanBinaryTable =
+    Map.fromList
+      [ (LESS, (<))
+      , (LESS_EQUAL, (<=))
+      , (GREATER, (>))
+      , (GREATER_EQUAL, (>=))
+      ]
+  numericBinaryTable =
+    Map.fromList
+      [ (STAR, (*))
+      , (SLASH, (/))
+      , (MINUS, (-))
+      ]
+interpretExpr env (Unary operator expr) = do
   (val, newEnv) <- interpretExpr env expr
   case tokenType operator of
     BANG -> return (VBoolean $ not $ isTruthy val, newEnv)
     MINUS -> case toNumber val operator of
-      Right n  -> return (VNumber $ -n, newEnv)
+      Right n -> return (VNumber $ -n, newEnv)
       Left err -> throwError err
     _ -> error "unexpected opType when interpreting unary"
 interpretExpr env (Grouping expr) = interpretExpr env expr
 interpretExpr env (Variable tok) =
   case get env tok of
     Right val -> return (val, env)
-    Left err  -> throwError err
+    Left err -> throwError err
 interpretExpr env (AndExpr left _ right) = do
   (val, newEnv) <- interpretExpr env left
   if not $ isTruthy val
@@ -147,13 +149,13 @@ call = undefined
 toNumberPair :: Value -> Value -> Token -> Either String (Double, Double)
 toNumberPair left right op = case (toNumber left op, toNumber right op) of
   (Right l, Right r) -> Right (l, r)
-  _                  -> Left $ runtimeError op "Operands must be numbers."
+  _ -> Left $ runtimeError op "Operands must be numbers."
 
 toNumber :: Value -> Token -> Either String Double
 toNumber (VNumber n) _ = Right n
-toNumber _ token       = Left $ runtimeError token "Operand must be a number."
+toNumber _ token = Left $ runtimeError token "Operand must be a number."
 
 isTruthy :: Value -> Bool
-isTruthy VNil         = False
+isTruthy VNil = False
 isTruthy (VBoolean b) = b
-isTruthy _            = True
+isTruthy _ = True

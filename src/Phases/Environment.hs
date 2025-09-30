@@ -1,21 +1,25 @@
 module Phases.Environment (
   Environment (..),
   defaultEnvironment,
-  define, get, assign,
-  envWithParent, getParent,
-  Value(..), fromLiteral,
+  define,
+  get,
+  assign,
+  envWithParent,
+  getParent,
+  Value (..),
+  fromLiteral,
 ) where
 
 import qualified Data.Map as Map
-import           Error
-import           Numeric
-import           Tokens
+import Error
+import Numeric
+import Tokens
 
-data Environment =
-  Environment
-    (Map.Map String Value)
-    (Map.Map Value (Environment -> [Value] -> Value))
-    (Maybe Environment)
+data Environment
+  = Environment
+      (Map.Map String Value)
+      (Map.Map Value (Environment -> [Value] -> Value))
+      (Maybe Environment)
 
 defaultEnvironment :: Environment
 defaultEnvironment = Environment Map.empty Map.empty Nothing
@@ -55,19 +59,19 @@ data Value
 
 instance Show Value where -- TODO: change literal to not include identifiers
   show (VNumber n) = formatNumber n
-    where
-      formatNumber :: Double -> String
-      formatNumber x
-        | isNegativeZero x = "-0"
-        | x == fromInteger (round x) = show (round x :: Integer)
-        | otherwise = showFFloat Nothing x ""
+   where
+    formatNumber :: Double -> String
+    formatNumber x
+      | isNegativeZero x = "-0"
+      | x == fromInteger (round x) = show (round x :: Integer)
+      | otherwise = showFFloat Nothing x ""
   show (VStr s) = s
   show (VBoolean b) = if b then "true" else "false"
   show VNil = "nil"
 
 fromLiteral :: Literal -> Value
-fromLiteral (Tokens.Number n)  = VNumber n
-fromLiteral (Tokens.Str s)     = VStr s
+fromLiteral (Tokens.Number n) = VNumber n
+fromLiteral (Tokens.Str s) = VStr s
 fromLiteral (Tokens.Boolean b) = VBoolean b
-fromLiteral Tokens.Nil         = VNil
-fromLiteral _                  = error "can't convert from literal"
+fromLiteral Tokens.Nil = VNil
+fromLiteral _ = error "can't convert from literal"

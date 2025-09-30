@@ -1,11 +1,11 @@
-module Tokens
-  ( TokenType (..),
-    Literal (..),
-    Token (..),
-  )
+module Tokens (
+  TokenType (..),
+  Literal (..),
+  Token (..),
+)
 where
 
-import           Numeric
+import Numeric
 
 data Literal
   = Number Double
@@ -18,12 +18,12 @@ data Literal
 
 instance Show Literal where -- TODO: change literal to not include identifiers
   show (Number n) = formatNumber n
-    where
-      formatNumber :: Double -> String
-      formatNumber x
-        | isNegativeZero x = "-0"
-        | x == fromInteger (round x) = show (round x :: Integer)
-        | otherwise = showFFloat Nothing x ""
+   where
+    formatNumber :: Double -> String
+    formatNumber x
+      | isNegativeZero x = "-0"
+      | x == fromInteger (round x) = show (round x :: Integer)
+      | otherwise = showFFloat Nothing x ""
   show (Str s) = s
   show (Identifier _) = error "shouldn't be showing identifier"
   show (Boolean b) = if b then "true" else "false"
@@ -31,11 +31,11 @@ instance Show Literal where -- TODO: change literal to not include identifiers
   show None = error "shouldn't be showing none"
 
 data Token = MkToken
-  { tokenType :: TokenType,
-    lexeme    :: String,
-    literal   :: Literal,
-    line      :: Int,
-    offset    :: Int
+  { tokenType :: TokenType
+  , lexeme :: String
+  , literal :: Literal
+  , line :: Int
+  , offset :: Int
   }
   deriving (Eq, Ord, Show)
 

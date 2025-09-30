@@ -1,21 +1,21 @@
 module ScannerTests (scannerTests) where
 
-import           Phases.Scanner
-import           Test.HUnit
-import           Tokens
+import Phases.Scanner
+import Test.HUnit
+import Tokens
 
 scannerTests :: Test
 scannerTests =
   TestList
-    [ testSingleCharToken,
-      testBangEqual,
-      testMultiCharacter,
-      testKeyword,
-      testMix,
-      testComment,
-      testUnterminatedString,
-      testUnknownChar,
-      testMultipleScanErrors
+    [ testSingleCharToken
+    , testBangEqual
+    , testMultiCharacter
+    , testKeyword
+    , testMix
+    , testComment
+    , testUnterminatedString
+    , testUnknownChar
+    , testMultipleScanErrors
     ]
 
 scanFile :: String -> IO ScanResult
@@ -29,8 +29,8 @@ testSingleCharToken = TestCase $ do
   assertEqual
     "Test single character token"
     ( Right
-        [ MkToken {tokenType = SEMICOLON, lexeme = ";", literal = None, line = 1, offset = 1},
-          MkToken {tokenType = EOF, offset = 1, literal = None, line = 2, lexeme = ""}
+        [ MkToken{tokenType = SEMICOLON, lexeme = ";", literal = None, line = 1, offset = 1}
+        , MkToken{tokenType = EOF, offset = 1, literal = None, line = 2, lexeme = ""}
         ]
     )
     tokens
@@ -41,8 +41,8 @@ testBangEqual = TestCase $ do
   assertEqual
     "test bang equal"
     ( Right
-        [ MkToken {tokenType = BANG_EQUAL, lexeme = "!=", literal = None, line = 1, offset = 1},
-          MkToken {tokenType = EOF, offset = 1, literal = None, line = 2, lexeme = ""}
+        [ MkToken{tokenType = BANG_EQUAL, lexeme = "!=", literal = None, line = 1, offset = 1}
+        , MkToken{tokenType = EOF, offset = 1, literal = None, line = 2, lexeme = ""}
         ]
     )
     tokens
@@ -53,10 +53,10 @@ testMultiCharacter = TestCase $ do
   assertEqual
     "test multiCharacter"
     ( Right
-        [ MkToken {tokenType = STRING, lexeme = "\"hello, world!\"", literal = Str "hello, world!", line = 1, offset = 1},
-          MkToken {tokenType = IDENTIFIER, lexeme = "hello", literal = Identifier "hello", line = 2, offset = 1},
-          MkToken {tokenType = NUMBER, lexeme = "123.456", literal = Number 123.456, line = 3, offset = 1},
-          MkToken {tokenType = EOF, offset = 1, literal = None, line = 4, lexeme = ""}
+        [ MkToken{tokenType = STRING, lexeme = "\"hello, world!\"", literal = Str "hello, world!", line = 1, offset = 1}
+        , MkToken{tokenType = IDENTIFIER, lexeme = "hello", literal = Identifier "hello", line = 2, offset = 1}
+        , MkToken{tokenType = NUMBER, lexeme = "123.456", literal = Number 123.456, line = 3, offset = 1}
+        , MkToken{tokenType = EOF, offset = 1, literal = None, line = 4, lexeme = ""}
         ]
     )
     tokens
@@ -67,10 +67,10 @@ testKeyword = TestCase $ do
   assertEqual
     "test keyword"
     ( Right
-        [ MkToken {tokenType = AND, lexeme = "and", literal = None, line = 1, offset = 1},
-          MkToken {tokenType = IF, lexeme = "if", literal = None, line = 2, offset = 1},
-          MkToken {tokenType = ELSE, lexeme = "else", literal = None, line = 3, offset = 1},
-          MkToken {tokenType = EOF, offset = 1, literal = None, line = 4, lexeme = ""}
+        [ MkToken{tokenType = AND, lexeme = "and", literal = None, line = 1, offset = 1}
+        , MkToken{tokenType = IF, lexeme = "if", literal = None, line = 2, offset = 1}
+        , MkToken{tokenType = ELSE, lexeme = "else", literal = None, line = 3, offset = 1}
+        , MkToken{tokenType = EOF, offset = 1, literal = None, line = 4, lexeme = ""}
         ]
     )
     tokens
@@ -81,17 +81,17 @@ testMix = TestCase $ do
   assertEqual
     "test mix of tokens"
     ( Right
-        [ MkToken {tokenType = LEFT_PAREN, offset = 1, literal = None, line = 1, lexeme = "("},
-          MkToken {tokenType = NUMBER, offset = 2, literal = Number 123.456, line = 1, lexeme = "123.456"},
-          MkToken {tokenType = RIGHT_PAREN, offset = 9, literal = None, line = 1, lexeme = ")"},
-          MkToken {tokenType = SEMICOLON, offset = 10, literal = None, line = 1, lexeme = ";"},
-          MkToken {tokenType = AND, offset = 1, literal = None, line = 2, lexeme = "and"},
-          MkToken {tokenType = IDENTIFIER, offset = 5, literal = Identifier "andy", line = 2, lexeme = "andy"},
-          MkToken {tokenType = SEMICOLON, offset = 9, literal = None, line = 2, lexeme = ";"},
-          MkToken {tokenType = PRINT, offset = 1, literal = None, line = 3, lexeme = "print"},
-          MkToken {tokenType = STRING, offset = 7, literal = Str "hello", line = 3, lexeme = "\"hello\""},
-          MkToken {tokenType = SEMICOLON, offset = 14, literal = None, line = 3, lexeme = ";"},
-          MkToken {tokenType = EOF, offset = 1, literal = None, line = 4, lexeme = ""}
+        [ MkToken{tokenType = LEFT_PAREN, offset = 1, literal = None, line = 1, lexeme = "("}
+        , MkToken{tokenType = NUMBER, offset = 2, literal = Number 123.456, line = 1, lexeme = "123.456"}
+        , MkToken{tokenType = RIGHT_PAREN, offset = 9, literal = None, line = 1, lexeme = ")"}
+        , MkToken{tokenType = SEMICOLON, offset = 10, literal = None, line = 1, lexeme = ";"}
+        , MkToken{tokenType = AND, offset = 1, literal = None, line = 2, lexeme = "and"}
+        , MkToken{tokenType = IDENTIFIER, offset = 5, literal = Identifier "andy", line = 2, lexeme = "andy"}
+        , MkToken{tokenType = SEMICOLON, offset = 9, literal = None, line = 2, lexeme = ";"}
+        , MkToken{tokenType = PRINT, offset = 1, literal = None, line = 3, lexeme = "print"}
+        , MkToken{tokenType = STRING, offset = 7, literal = Str "hello", line = 3, lexeme = "\"hello\""}
+        , MkToken{tokenType = SEMICOLON, offset = 14, literal = None, line = 3, lexeme = ";"}
+        , MkToken{tokenType = EOF, offset = 1, literal = None, line = 4, lexeme = ""}
         ]
     )
     tokens
@@ -102,8 +102,8 @@ testComment = TestCase $ do
   assertEqual
     "test comment"
     ( Right
-        [ MkToken {tokenType = SEMICOLON, lexeme = ";", literal = None, line = 1, offset = 1},
-          MkToken {tokenType = EOF, offset = 1, literal = None, line = 3, lexeme = ""}
+        [ MkToken{tokenType = SEMICOLON, lexeme = ";", literal = None, line = 1, offset = 1}
+        , MkToken{tokenType = EOF, offset = 1, literal = None, line = 3, lexeme = ""}
         ]
     )
     tokens
@@ -130,9 +130,9 @@ testMultipleScanErrors = TestCase $ do
   assertEqual
     "test many scanner errors"
     ( Left
-        [ "[line 1] Error: Unexpected character.",
-          "[line 1] Error: Unexpected character.",
-          "[line 3] Error: Unterminated string."
+        [ "[line 1] Error: Unexpected character."
+        , "[line 1] Error: Unexpected character."
+        , "[line 3] Error: Unterminated string."
         ]
     )
     tokens
