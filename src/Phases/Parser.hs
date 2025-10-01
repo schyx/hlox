@@ -35,6 +35,7 @@ declaration tokens inErrs
   | (Right _, _) <- matchFirst [VAR] tokens = case varDeclarationStatement tokens inErrs of
       Right (expr, leftovers, errs) -> (Right (expr, leftovers, errs ++ inErrs), True)
       Left (err, leftovers) -> (Left (err, synchronize leftovers), True)
+  | (Right _, _) <- matchFirst [FUN] tokens = (functionDeclarationStatement tokens inErrs, True)
   | otherwise = case statement tokens inErrs of
       Right (expr, leftovers, errs) -> (Right (expr, leftovers, errs ++ inErrs), True)
       Left (err, leftovers) -> (Left (err, synchronize leftovers), True)
@@ -118,6 +119,31 @@ whileStatement (_ : afterWhile) inErrs = do
   return (While expr stmt, afterStmt, stmtErrs)
 whileStatement [] _ = error "Should have at least While in whileStatement"
 
+functionDeclarationStatement :: [Token] -> [String] -> ParseStatementResult
+functionDeclarationStatement (_ : afterFun) inErrs = do
+  (name, afterFuncName, funcNameErrs) <- consume IDENTIFIER afterFun "Expect function name." inErrs
+  (_, afterLeftParen, leftParenErrs) <- consume LEFT_PAREN afterFuncName "Expect '(' after function name." funcNameErrs
+  (params, afterParams, paramErrs) <- getParams afterLeftParen [] leftParenErrs
+  (_, afterRightParen, rightParenErrs) <- consume RIGHT_PAREN afterParams "Expect ')' after parameters." paramErrs
+  (_, afterLeftBrace, leftBraceErrs) <- consume LEFT_BRACE afterRightParen "Expect '{' before function body." rightParenErrs
+  (body, afterBlock, blockErrs) <- buildBlock afterLeftBrace [] leftBraceErrs
+  return (Function name params body, afterBlock, blockErrs)
+ where
+  getParams :: [Token] -> [Token] -> [String] -> Either ([String], [Token]) ([Token], [Token], [String])
+  getParams toks buildup goErrs = do
+    let argNumErr =
+          if length buildup >= 255
+            then parseError (head toks) "Can't have more than 255 parameters." : goErrs
+            else goErrs
+    (param, afterParam, paramErrs) <- consume IDENTIFIER buildup "Expect parameter name." argNumErr
+    let newBuildup = param : buildup
+    case matchFirst [COMMA] afterParam of
+      (Left (), _) -> do
+        (_, afterRightParen, rightParenErrs) <- consume RIGHT_PAREN afterParam "Expect ')' after parameters." paramErrs
+        return (newBuildup, afterRightParen, rightParenErrs)
+      (Right _, afterComma) -> getParams afterComma newBuildup paramErrs
+functionDeclarationStatement [] _ = error "Should have at least Fun in functionDeclarationStatement"
+
 varDeclarationStatement :: [Token] -> [String] -> ParseStatementResult
 varDeclarationStatement [t] inErrs = Left (parseError t "Expect variable name." : inErrs, [t])
 varDeclarationStatement (_ : rest) inErrs = do
@@ -157,17 +183,17 @@ ifStatement [] _ = error "Should have at least EOF in ifStatement"
 blockStatement :: [Token] -> [String] -> ParseStatementResult
 blockStatement (_ : rest) inErrs = do
   (blockStatements, leftovers, blockErrs) <- buildBlock rest [] inErrs
-  return (Block $ reverse blockStatements, leftovers, blockErrs)
- where
-  buildBlock :: [Token] -> [Stmt] -> [String] -> Either ([String], [Token]) ([Stmt], [Token], [String])
-  buildBlock toks buildup inBlockErrs
-    | (Right _, tRest) <- matchFirst [RIGHT_BRACE] toks = return (buildup, tRest, inBlockErrs)
-    | (Right t, tRest) <- matchFirst [EOF] toks = Left (parseError t "Expect '}' after block." : inBlockErrs, tRest)
-    | otherwise = do
-        case declaration toks inBlockErrs of
-          (Right (stmt, leftovers, stmtErrs), _) -> buildBlock leftovers (stmt : buildup) stmtErrs
-          (Left (err, leftovers), _) -> Left (err, leftovers)
+  return (Block blockStatements, leftovers, blockErrs)
 blockStatement _ _ = error "Should not have empty in blockStatement"
+
+buildBlock :: [Token] -> [Stmt] -> [String] -> Either ([String], [Token]) ([Stmt], [Token], [String])
+buildBlock toks buildup inBlockErrs
+  | (Right _, tRest) <- matchFirst [RIGHT_BRACE] toks = return (reverse buildup, tRest, inBlockErrs)
+  | (Right t, tRest) <- matchFirst [EOF] toks = Left (parseError t "Expect '}' after block." : inBlockErrs, tRest)
+  | otherwise = do
+      case declaration toks inBlockErrs of
+        (Right (stmt, leftovers, stmtErrs), _) -> buildBlock leftovers (stmt : buildup) stmtErrs
+        (Left (err, leftovers), _) -> Left (err, leftovers)
 
 printStatement :: [Token] -> [String] -> ParseStatementResult
 printStatement (_ : afterPrint) inErrs = do
@@ -267,7 +293,7 @@ finishCall callee leftParen argStart inErrs = case matchFirst [RIGHT_PAREN] argS
   go toks buildup goErrs = do
     let argNumErr =
           if length buildup >= 255
-            then parseError (head toks) "Can't have more than 255 elements" : goErrs
+            then parseError (head toks) "Can't have more than 255 elements." : goErrs
             else goErrs
     (expr, afterExpr, exprErrs) <- expression toks argNumErr
     let newBuildup = expr : buildup

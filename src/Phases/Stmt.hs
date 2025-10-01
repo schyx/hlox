@@ -10,3 +10,4 @@ data Stmt
   | Block [Stmt]
   | If Expr Stmt (Maybe Stmt)
   | While Expr Stmt
+  | Function Token [Token] [Stmt]
