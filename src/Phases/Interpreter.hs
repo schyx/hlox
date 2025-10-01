@@ -1,5 +1,6 @@
 module Phases.Interpreter (interpret, InterpreterOutput, interpretExpr) where
 
+import Control.Monad (foldM)
 import Control.Monad.Except (ExceptT, throwError)
 import Control.Monad.IO.Class (liftIO)
 import qualified Data.Map as Map
@@ -28,12 +29,6 @@ interpret env (Block stmts) = do
   let blockEnv = envWithParent env
   newBlockEnv <- execBlock blockEnv stmts
   return $ getParent newBlockEnv
- where
-  execBlock :: Environment -> [Stmt] -> ExceptT String IO Environment
-  execBlock blockEnv (s : sOther) = do
-    newBlockEnv <- interpret blockEnv s
-    execBlock newBlockEnv sOther
-  execBlock blockEnv [] = return blockEnv
 interpret env (If condition ifBranch (Just elseBranch)) = do
   (val, newEnv) <- interpretExpr env condition
   interpret newEnv (if isTruthy val then ifBranch else elseBranch)
@@ -47,13 +42,24 @@ interpret env (While condition whileBlock) = do
       afterStmtEnv <- interpret newEnv whileBlock
       interpret afterStmtEnv (While condition whileBlock)
     else return newEnv
+interpret env (Function fname params body) = do
+  let functionVal = VFunction (length params) fname ("<fn " ++ lexeme fname ++ ">")
+  let functionF enclosing args = do
+        let fEnvInitial = envWithParent enclosing
+        let fEnv = foldr (\(tok, val) prevEnv -> define prevEnv tok val) fEnvInitial (zip params args)
+        outputEnv <- execBlock fEnv body
+        return (VNil, getParent outputEnv)
+  return $ assignFunc env fname functionVal functionF
+
+execBlock :: Environment -> [Stmt] -> ExceptT String IO Environment
+execBlock = foldM interpret
 
 interpretExpr :: Environment -> Expr -> InterpretExprResult
 interpretExpr env (Call callee paren args) = do
   (val, newEnv) <- interpretExpr env callee
   (params, afterParamsEnv) <- interpretExprs newEnv args
   case val of
-    c@(VCall arity _ _) ->
+    c@(VFunction arity _ _) ->
       if arity == length params
         then call afterParamsEnv c params
         else

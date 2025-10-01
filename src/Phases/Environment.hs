@@ -9,6 +9,7 @@ module Phases.Environment (
   Value (..),
   fromLiteral,
   getFunc,
+  assignFunc,
 ) where
 
 import Control.Monad.Except (ExceptT (..))
@@ -86,12 +87,22 @@ getFunc (Environment _ funcTable (Just parent)) val =
     Nothing -> getFunc parent val
     Just f -> f
 
+assignFunc ::
+  Environment ->
+  Token ->
+  Value ->
+  (Environment -> [Value] -> ExceptT String IO (Value, Environment)) ->
+  Environment
+assignFunc (Environment table funcTable parent) fname fval ffunc =
+  Environment (Map.insert (lexeme fname) fval table) (Map.insert fval ffunc funcTable) parent
+
 data Value
   = VNumber Double
   | VStr String
   | VBoolean Bool
   | VNil
   | VCall Int Token String
+  | VFunction Int Token String
   deriving (Eq, Ord)
 
 instance Show Value where -- TODO: change literal to not include identifiers
@@ -105,7 +116,8 @@ instance Show Value where -- TODO: change literal to not include identifiers
   show (VStr s) = s
   show (VBoolean b) = if b then "true" else "false"
   show VNil = "nil"
-  show (VCall _ _ s) = s
+  show (VFunction _ _ s) = s
+  show VCall{} = error "should not be showing VCalls"
 
 fromLiteral :: Literal -> Value
 fromLiteral (Tokens.Number n) = VNumber n

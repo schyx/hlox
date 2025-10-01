@@ -124,8 +124,7 @@ functionDeclarationStatement (_ : afterFun) inErrs = do
   (name, afterFuncName, funcNameErrs) <- consume IDENTIFIER afterFun "Expect function name." inErrs
   (_, afterLeftParen, leftParenErrs) <- consume LEFT_PAREN afterFuncName "Expect '(' after function name." funcNameErrs
   (params, afterParams, paramErrs) <- getParams afterLeftParen [] leftParenErrs
-  (_, afterRightParen, rightParenErrs) <- consume RIGHT_PAREN afterParams "Expect ')' after parameters." paramErrs
-  (_, afterLeftBrace, leftBraceErrs) <- consume LEFT_BRACE afterRightParen "Expect '{' before function body." rightParenErrs
+  (_, afterLeftBrace, leftBraceErrs) <- consume LEFT_BRACE afterParams "Expect '{' before function body." paramErrs
   (body, afterBlock, blockErrs) <- buildBlock afterLeftBrace [] leftBraceErrs
   return (Function name params body, afterBlock, blockErrs)
  where
@@ -135,12 +134,12 @@ functionDeclarationStatement (_ : afterFun) inErrs = do
           if length buildup >= 255
             then parseError (head toks) "Can't have more than 255 parameters." : goErrs
             else goErrs
-    (param, afterParam, paramErrs) <- consume IDENTIFIER buildup "Expect parameter name." argNumErr
+    (param, afterParam, paramErrs) <- consume IDENTIFIER toks "Expect parameter name." argNumErr
     let newBuildup = param : buildup
     case matchFirst [COMMA] afterParam of
       (Left (), _) -> do
         (_, afterRightParen, rightParenErrs) <- consume RIGHT_PAREN afterParam "Expect ')' after parameters." paramErrs
-        return (newBuildup, afterRightParen, rightParenErrs)
+        return (reverse newBuildup, afterRightParen, rightParenErrs)
       (Right _, afterComma) -> getParams afterComma newBuildup paramErrs
 functionDeclarationStatement [] _ = error "Should have at least Fun in functionDeclarationStatement"
 
