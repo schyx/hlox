@@ -1,8 +1,9 @@
 module Phases.Interpreter (interpret, InterpreterOutput, interpretExpr) where
 
 import Control.Monad (foldM)
-import Control.Monad.Except (ExceptT, throwError)
+import Control.Monad.Except (ExceptT(..), runExceptT, throwError)
 import Control.Monad.IO.Class (liftIO)
+import Control.Monad.Trans.Class (lift)
 import qualified Data.Map as Map
 import Error
 import Phases.Environment
@@ -10,9 +11,9 @@ import Phases.Expr
 import Phases.Stmt
 import Tokens
 
-type InterpretExprResult = ExceptT String IO (Value, Environment)
+type InterpretExprResult = ExceptT (Value, Environment) (ExceptT String IO) (Value, Environment)
 
-type InterpreterOutput = ExceptT String IO Environment
+type InterpreterOutput = ExceptT (Value, Environment) (ExceptT String IO) Environment
 
 interpret :: Environment -> Stmt -> InterpreterOutput
 interpret env (Print expr) = do
@@ -47,11 +48,16 @@ interpret env (Function fname params body) = do
   let functionF enclosing args = do
         let fEnvInitial = envWithParent enclosing
         let fEnv = foldr (\(tok, val) prevEnv -> define prevEnv tok val) fEnvInitial (zip params args)
-        outputEnv <- execBlock fEnv body
-        return (VNil, getParent outputEnv)
+        run <- runExceptT $ execBlock fEnv body
+        case run of
+          Left (val, outputEnv) -> ExceptT $ return $ Right (val, getParent outputEnv)
+          Right outputEnv -> ExceptT $ return $ Right (VNil, getParent outputEnv)
   return $ assignFunc env fname functionVal functionF
+interpret env (Return _ expr) = do
+  (val, afterExprEnv) <- interpretExpr env expr
+  throwError (val, afterExprEnv)
 
-execBlock :: Environment -> [Stmt] -> ExceptT String IO Environment
+execBlock :: Environment -> [Stmt] -> ExceptT (Value, Environment) (ExceptT String IO) Environment
 execBlock = foldM interpret
 
 interpretExpr :: Environment -> Expr -> InterpretExprResult
@@ -63,13 +69,13 @@ interpretExpr env (Call callee paren args) = do
       if arity == length params
         then call afterParamsEnv c params
         else
-          throwError
+          lift . throwError
             $ runtimeError
               paren
             $ "Expected " ++ show arity ++ " arguments but got " ++ show (length params) ++ "."
-    _ -> throwError $ runtimeError paren "Can only call functions and classes."
+    _ -> lift . throwError $ runtimeError paren "Can only call functions and classes."
  where
-  interpretExprs :: Environment -> [Expr] -> ExceptT String IO ([Value], Environment)
+  interpretExprs :: Environment -> [Expr] -> ExceptT (Value, Environment) (ExceptT String IO) ([Value], Environment)
   interpretExprs argsEnv [] = return ([], argsEnv)
   interpretExprs argsEnv (expr : exprs) = do
     (val, newEnv) <- interpretExpr argsEnv expr
@@ -79,14 +85,14 @@ interpretExpr env (Assign name value) = do
   (val, newEnv) <- interpretExpr env value
   case assign newEnv name val of
     (Right _, assignedEnv) -> return (val, assignedEnv)
-    (Left err, _) -> throwError err
+    (Left err, _) -> lift $ throwError err
 interpretExpr env (Binary left operator right) = do
   (leftVal, afterLeftEnv) <- interpretExpr env left
   (rightVal, afterRightEnv) <- interpretExpr afterLeftEnv right
   output <- getOutput leftVal rightVal
   return (output, afterRightEnv)
  where
-  getOutput :: Value -> Value -> ExceptT String IO Value
+  getOutput :: Value -> Value -> ExceptT (Value, Environment) (ExceptT String IO) Value
   getOutput leftVal rightVal
     | tokenType operator `elem` [BANG_EQUAL, EQUAL_EQUAL] =
         return $
@@ -99,17 +105,17 @@ interpretExpr env (Binary left operator right) = do
         Right (leftn, rightn) -> return $ VNumber $ leftn + rightn
         Left _ -> case (leftVal, rightVal) of
           (VStr lefts, VStr rights) -> return $ VStr $ lefts ++ rights
-          _ -> throwError $ runtimeError operator "Operands must be two numbers or two strings."
+          _ -> lift $ throwError $ runtimeError operator "Operands must be two numbers or two strings."
     | Map.member (tokenType operator) numericBinaryTable =
         case toNumberPair leftVal rightVal operator of
           Right (leftn, rightn) ->
             return $ VNumber $ (numericBinaryTable Map.! tokenType operator) leftn rightn
-          Left err -> throwError err
+          Left err -> lift $ throwError err
     | Map.member (tokenType operator) booleanBinaryTable =
         case toNumberPair leftVal rightVal operator of
           Right (leftn, rightn) ->
             return $ VBoolean $ (booleanBinaryTable Map.! tokenType operator) leftn rightn
-          Left err -> throwError err
+          Left err -> lift $ throwError err
     | otherwise = error "Unexpected opType when interpreting binary"
   booleanBinaryTable =
     Map.fromList
@@ -130,13 +136,13 @@ interpretExpr env (Unary operator expr) = do
     BANG -> return (VBoolean $ not $ isTruthy val, newEnv)
     MINUS -> case toNumber val operator of
       Right n -> return (VNumber $ -n, newEnv)
-      Left err -> throwError err
+      Left err -> lift $ throwError err
     _ -> error "unexpected opType when interpreting unary"
 interpretExpr env (Grouping expr) = interpretExpr env expr
 interpretExpr env (Variable tok) =
   case get env tok of
     Right val -> return (val, env)
-    Left err -> throwError err
+    Left err -> lift $ throwError err
 interpretExpr env (AndExpr left _ right) = do
   (val, newEnv) <- interpretExpr env left
   if not $ isTruthy val
@@ -152,7 +158,8 @@ interpretExpr env (Primary lit) = return (fromLiteral lit, env)
 call :: Environment -> Value -> [Value] -> InterpretExprResult
 call env callee args =
   let func = getFunc env callee
-   in func env args
+      output = lift $ func env args
+   in output
 
 toNumberPair :: Value -> Value -> Token -> Either String (Double, Double)
 toNumberPair left right op = case (toNumber left op, toNumber right op) of

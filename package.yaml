@@ -24,6 +24,7 @@ dependencies:
 - containers
 - time
 - mtl >= 2.3
+- transformers >= 0.6
 
 ghc-options:
 - -Wall

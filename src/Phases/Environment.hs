@@ -117,7 +117,7 @@ instance Show Value where -- TODO: change literal to not include identifiers
   show (VBoolean b) = if b then "true" else "false"
   show VNil = "nil"
   show (VFunction _ _ s) = s
-  show VCall{} = error "should not be showing VCalls"
+  show (VCall _ _ s) = s
 
 fromLiteral :: Literal -> Value
 fromLiteral (Tokens.Number n) = VNumber n

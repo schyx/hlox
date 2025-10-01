@@ -48,10 +48,11 @@ runPrompt = go defaultEnvironment
               toStderr err
               go env
             Right (expr, [_eof], _) -> do
-              exprOutput <- runExceptT $ interpretExpr env expr
+              exprOutput <- runExceptT $ runExceptT $ interpretExpr env expr
               case exprOutput of
                 Left err -> toStderr [err] >> go env
-                Right (lit, _) -> print lit >> go env
+                Right (Left _) -> error "got return value?"
+                Right (Right (lit, _)) -> print lit >> go env
             Right (_, _, _) -> toStderr ["Too many tokens."] >> go env
 
 -- | Runs a Lox file
@@ -99,9 +100,10 @@ toStderr (err : errs) = do
 
 runInterp :: Environment -> Stmt -> IO (Either String Environment)
 runInterp env s = do
-  interpOutput <- runExceptT $ interpret env s
+  interpOutput <- runExceptT $ runExceptT $ interpret env s
   case interpOutput of
-    Right newEnv -> return $ Right newEnv
+    Right (Right newEnv) -> return $ Right newEnv
+    Right (Left _) -> error "got return value"
     Left err -> do
       hPutStrLn stderr err
       return $ Left err

@@ -35,7 +35,9 @@ declaration tokens inErrs
   | (Right _, _) <- matchFirst [VAR] tokens = case varDeclarationStatement tokens inErrs of
       Right (expr, leftovers, errs) -> (Right (expr, leftovers, errs ++ inErrs), True)
       Left (err, leftovers) -> (Left (err, synchronize leftovers), True)
-  | (Right _, _) <- matchFirst [FUN] tokens = (functionDeclarationStatement tokens inErrs, True)
+  | (Right _, _) <- matchFirst [FUN] tokens = case functionDeclarationStatement tokens inErrs of
+      Right (expr, leftovers, errs) -> (Right (expr, leftovers, errs ++ inErrs), True)
+      Left (err, leftovers) -> (Left (err, synchronize leftovers), True)
   | otherwise = case statement tokens inErrs of
       Right (expr, leftovers, errs) -> (Right (expr, leftovers, errs ++ inErrs), True)
       Left (err, leftovers) -> (Left (err, synchronize leftovers), True)
@@ -51,10 +53,21 @@ statement (t : rest) inErrs
   | ttype == WHILE = whileStatement (t : rest) inErrs
   | ttype == FOR = forStatement (t : rest) inErrs
   | ttype == LEFT_BRACE = blockStatement (t : rest) inErrs
+  | ttype == RETURN = returnStatement (t : rest) inErrs
   | otherwise = expressionStatement (t : rest) inErrs
  where
   ttype = tokenType t
 statement [] _ = error "Should have at least EOF in statement"
+
+returnStatement :: [Token] -> [String] -> ParseStatementResult
+returnStatement (ret : afterReturn) inErrs =
+  case matchFirst [SEMICOLON] afterReturn of
+    (Left (), _) -> do
+      (expr, afterExpr, exprErrs) <- expression afterReturn inErrs
+      (_, afterSemi, semiErrs) <- consume SEMICOLON afterExpr "Expect ';' after return value." exprErrs
+      return (Return ret expr, afterSemi, semiErrs)
+    (Right _, afterSemi) -> return (Return ret $ Primary Nil, afterSemi, inErrs)
+returnStatement [] _ = error "Should at least have return in returnStatement"
 
 forStatement :: [Token] -> [String] -> ParseStatementResult
 forStatement (_ : afterFor) inErrs = do
@@ -123,11 +136,16 @@ functionDeclarationStatement :: [Token] -> [String] -> ParseStatementResult
 functionDeclarationStatement (_ : afterFun) inErrs = do
   (name, afterFuncName, funcNameErrs) <- consume IDENTIFIER afterFun "Expect function name." inErrs
   (_, afterLeftParen, leftParenErrs) <- consume LEFT_PAREN afterFuncName "Expect '(' after function name." funcNameErrs
-  (params, afterParams, paramErrs) <- getParams afterLeftParen [] leftParenErrs
+  (params, afterParams, paramErrs) <- startParams afterLeftParen leftParenErrs
   (_, afterLeftBrace, leftBraceErrs) <- consume LEFT_BRACE afterParams "Expect '{' before function body." paramErrs
   (body, afterBlock, blockErrs) <- buildBlock afterLeftBrace [] leftBraceErrs
   return (Function name params body, afterBlock, blockErrs)
  where
+  startParams toks startErrs = case matchFirst [IDENTIFIER] toks of
+    (Left _, _) -> do
+      (_, afterRParen, paramErrs) <- consume RIGHT_PAREN toks "Expect ')' after parameters." startErrs
+      return ([], afterRParen, paramErrs)
+    (Right _, _) -> getParams toks [] startErrs
   getParams :: [Token] -> [Token] -> [String] -> Either ([String], [Token]) ([Token], [Token], [String])
   getParams toks buildup goErrs = do
     let argNumErr =
@@ -292,7 +310,7 @@ finishCall callee leftParen argStart inErrs = case matchFirst [RIGHT_PAREN] argS
   go toks buildup goErrs = do
     let argNumErr =
           if length buildup >= 255
-            then parseError (head toks) "Can't have more than 255 elements." : goErrs
+            then parseError (head toks) "Can't have more than 255 arguments." : goErrs
             else goErrs
     (expr, afterExpr, exprErrs) <- expression toks argNumErr
     let newBuildup = expr : buildup

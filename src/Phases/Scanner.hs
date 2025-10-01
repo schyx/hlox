@@ -1,3 +1,4 @@
+-- TODO: don't immediately quit on errors; continue to parser
 module Phases.Scanner (scanTokens, ScanResult) where
 
 import Data.Char
