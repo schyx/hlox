@@ -40,10 +40,10 @@ runPrompt = go defaultEnvironment
       Left _ -> do
         let scanResult = scanTokens input
         case scanResult of
-          Left errs -> do
+          (Left errs, _) -> do
             toStderr errs
             go env
-          Right tokens -> case expression tokens [] of
+          (Right _, tokens) -> case expression tokens [] of
             Left (err, _) -> do
               toStderr err
               go env
@@ -73,7 +73,7 @@ runStatements :: Environment -> String -> IO (Either Errs Environment)
 runStatements env contents = do
   let scanResult = scanTokens contents
   case scanResult of
-    Right tokens -> case parse tokens of
+    (Right (), tokens) -> case parse tokens of
       Right stmts -> do
         envOrErr <- go env stmts
         case envOrErr of
@@ -81,8 +81,10 @@ runStatements env contents = do
           Left err -> return $ Left $ RuntimeErr err
       Left errs -> do
         return $ Left $ ScanOrParseErr errs
-    Left errs -> do
-      return $ Left $ ScanOrParseErr errs
+    (Left errs, tokens) -> do
+      case parse tokens of 
+        Right _ -> return $ Left $ ScanOrParseErr errs
+        Left parseErrs -> return $ Left $ ScanOrParseErr $ errs ++ parseErrs
  where
   go :: Environment -> [Stmt] -> IO (Either String Environment)
   go e (s : rest) = do

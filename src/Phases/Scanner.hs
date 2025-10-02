@@ -1,4 +1,3 @@
--- TODO: don't immediately quit on errors; continue to parser
 module Phases.Scanner (scanTokens, ScanResult) where
 
 import Data.Char
@@ -6,15 +5,15 @@ import qualified Data.Map as Map
 import Error
 import Tokens
 
-type ScanResult = Either [String] [Token]
+type ScanResult = (Either [String] (), [Token])
 
 -- | Implements scanning phase of the interpreter
 scanTokens :: String -> ScanResult
 scanTokens contents =
-  case scanHelper contents 1 1 $ Right [] of
+  case scanHelper contents 1 1 (Right (), []) of
     -- reverse the list because we build it up in reverse order
-    Left errs -> Left $ reverse errs
-    Right tokens -> Right $ reverse tokens
+    (Left errs, toks) -> (Left $ reverse errs, reverse toks)
+    (Right _, tokens) -> (Right (), reverse tokens)
 
 scanHelper :: String -> Int -> Int -> ScanResult -> ScanResult
 scanHelper [] currentLine currentOffset currentTokens =
@@ -93,7 +92,9 @@ scanHelper (c : rest) currentLine currentOffset currentTokens
        in case tokenOrErr of
             Left err ->
               -- only occurs at end of string, so no need for line/offset checks
-              addToResult currentTokens $ Left err
+              addToResult
+                (addToResult currentTokens $ Left err)
+                (Right $ MkToken{tokenType = EOF, offset = 0, literal = None, line = 0, lexeme = ""})
             Right (token, leftovers, newLine, newOffset) ->
               scanHelper leftovers newLine newOffset $ addToResult currentTokens $ Right token
   -- identifiers
@@ -310,7 +311,7 @@ table =
     ]
 
 addToResult :: ScanResult -> Either String Token -> ScanResult
-addToResult (Right tokens) (Right token) = Right $ token : tokens
-addToResult (Left errs) (Left err) = Left $ err : errs
-addToResult (Right _) (Left err) = Left [err]
-addToResult (Left errs) (Right _) = Left errs
+addToResult (Right (), tokens) (Right token) = (Right (), token : tokens)
+addToResult (Right (), tokens) (Left err) = (Left [err], tokens)
+addToResult (Left errs, tokens) (Left err) = (Left $ err : errs, tokens)
+addToResult (Left errs, tokens) (Right token) = (Left errs, token : tokens)
