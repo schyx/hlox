@@ -1,176 +1,182 @@
-module Phases.Interpreter (interpret, InterpreterOutput, interpretExpr) where
+module Phases.Interpreter (
+  Interpreter (Interpreter),
+  EnvID (..),
+  defaultInterpreter,
+  fromLiteral,
+  envWithParent,
+  changeToParent,
+  define,
+  assign,
+  get,
+  restoreRunningEnv,
+  Value (..),
+) where
 
-import Control.Monad (foldM)
-import Control.Monad.Except (ExceptT(..), runExceptT, throwError)
-import Control.Monad.IO.Class (liftIO)
-import Control.Monad.Trans.Class (lift)
+import Control.Monad.Except (ExceptT (..))
+import Control.Monad.IO.Class (MonadIO (liftIO))
 import qualified Data.Map as Map
-import Error
-import Phases.Environment
-import Phases.Expr
-import Phases.Stmt
+import Data.Time.Clock.POSIX (getPOSIXTime)
+import Error (runtimeError)
+import Numeric (showFFloat)
 import Tokens
 
-type InterpretExprResult = ExceptT (Value, Environment) (ExceptT String IO) (Value, Environment)
+data Interpreter = Interpreter (Map.Map EnvID Environment) EnvID EnvID
+  deriving (Show)
 
-type InterpreterOutput = ExceptT (Value, Environment) (ExceptT String IO) Environment
+data Environment = Environment (Map.Map String Value) (Maybe EnvID)
+  deriving (Show)
 
-interpret :: Environment -> Stmt -> InterpreterOutput
-interpret env (Print expr) = do
-  (val, newEnv) <- interpretExpr env expr
-  liftIO $ print val
-  return newEnv
-interpret env (Expression expr) = do
-  (_, newEnv) <- interpretExpr env expr
-  return newEnv
-interpret env (Var name initializer) = do
-  (val, newEnv) <- interpretExpr env initializer
-  return $ define newEnv name val
-interpret env (Block stmts) = do
-  let blockEnv = envWithParent env
-  newBlockEnv <- execBlock blockEnv stmts
-  return $ getParent newBlockEnv
-interpret env (If condition ifBranch (Just elseBranch)) = do
-  (val, newEnv) <- interpretExpr env condition
-  interpret newEnv (if isTruthy val then ifBranch else elseBranch)
-interpret env (If condition ifBranch Nothing) = do
-  (val, newEnv) <- interpretExpr env condition
-  if isTruthy val then interpret newEnv ifBranch else return newEnv
-interpret env (While condition whileBlock) = do
-  (val, newEnv) <- interpretExpr env condition
-  if isTruthy val
-    then do
-      afterStmtEnv <- interpret newEnv whileBlock
-      interpret afterStmtEnv (While condition whileBlock)
-    else return newEnv
-interpret env (Function fname params body) = do
-  let functionVal = VFunction (length params) fname ("<fn " ++ lexeme fname ++ ">")
-  let functionF enclosing args = do
-        let fEnvInitial = envWithParent enclosing
-        let fEnv = foldr (\(tok, val) prevEnv -> define prevEnv tok val) fEnvInitial (zip params args)
-        run <- runExceptT $ execBlock fEnv body
-        case run of
-          Left (val, outputEnv) -> ExceptT $ return $ Right (val, getParent outputEnv)
-          Right outputEnv -> ExceptT $ return $ Right (VNil, getParent outputEnv)
-  return $ assignFunc env fname functionVal functionF
-interpret env (Return _ expr) = do
-  (val, afterExprEnv) <- interpretExpr env expr
-  throwError (val, afterExprEnv)
+newtype EnvID = EnvID Int
+  deriving (Show, Eq, Ord)
 
-execBlock :: Environment -> [Stmt] -> ExceptT (Value, Environment) (ExceptT String IO) Environment
-execBlock = foldM interpret
+nextLargest :: EnvID -> EnvID
+nextLargest (EnvID envId) = EnvID $ envId + 1
 
-interpretExpr :: Environment -> Expr -> InterpretExprResult
-interpretExpr env (Call callee paren args) = do
-  (val, newEnv) <- interpretExpr env callee
-  (params, afterParamsEnv) <- interpretExprs newEnv args
-  case val of
-    c@(VFunction arity _ _) ->
-      if arity == length params
-        then call afterParamsEnv c params
-        else
-          lift . throwError
-            $ runtimeError
-              paren
-            $ "Expected " ++ show arity ++ " arguments but got " ++ show (length params) ++ "."
-    _ -> lift . throwError $ runtimeError paren "Can only call functions and classes."
- where
-  interpretExprs :: Environment -> [Expr] -> ExceptT (Value, Environment) (ExceptT String IO) ([Value], Environment)
-  interpretExprs argsEnv [] = return ([], argsEnv)
-  interpretExprs argsEnv (expr : exprs) = do
-    (val, newEnv) <- interpretExpr argsEnv expr
-    (params, afterParamsEnv) <- interpretExprs newEnv exprs
-    return (val : params, afterParamsEnv)
-interpretExpr env (Assign name value) = do
-  (val, newEnv) <- interpretExpr env value
-  case assign newEnv name val of
-    (Right _, assignedEnv) -> return (val, assignedEnv)
-    (Left err, _) -> lift $ throwError err
-interpretExpr env (Binary left operator right) = do
-  (leftVal, afterLeftEnv) <- interpretExpr env left
-  (rightVal, afterRightEnv) <- interpretExpr afterLeftEnv right
-  output <- getOutput leftVal rightVal
-  return (output, afterRightEnv)
- where
-  getOutput :: Value -> Value -> ExceptT (Value, Environment) (ExceptT String IO) Value
-  getOutput leftVal rightVal
-    | tokenType operator `elem` [BANG_EQUAL, EQUAL_EQUAL] =
-        return $
-          VBoolean
-            ( if tokenType operator == EQUAL_EQUAL
-                then leftVal == rightVal
-                else leftVal /= rightVal
-            )
-    | tokenType operator == PLUS = case toNumberPair leftVal rightVal operator of
-        Right (leftn, rightn) -> return $ VNumber $ leftn + rightn
-        Left _ -> case (leftVal, rightVal) of
-          (VStr lefts, VStr rights) -> return $ VStr $ lefts ++ rights
-          _ -> lift $ throwError $ runtimeError operator "Operands must be two numbers or two strings."
-    | Map.member (tokenType operator) numericBinaryTable =
-        case toNumberPair leftVal rightVal operator of
-          Right (leftn, rightn) ->
-            return $ VNumber $ (numericBinaryTable Map.! tokenType operator) leftn rightn
-          Left err -> lift $ throwError err
-    | Map.member (tokenType operator) booleanBinaryTable =
-        case toNumberPair leftVal rightVal operator of
-          Right (leftn, rightn) ->
-            return $ VBoolean $ (booleanBinaryTable Map.! tokenType operator) leftn rightn
-          Left err -> lift $ throwError err
-    | otherwise = error "Unexpected opType when interpreting binary"
-  booleanBinaryTable =
-    Map.fromList
-      [ (LESS, (<))
-      , (LESS_EQUAL, (<=))
-      , (GREATER, (>))
-      , (GREATER_EQUAL, (>=))
-      ]
-  numericBinaryTable =
-    Map.fromList
-      [ (STAR, (*))
-      , (SLASH, (/))
-      , (MINUS, (-))
-      ]
-interpretExpr env (Unary operator expr) = do
-  (val, newEnv) <- interpretExpr env expr
-  case tokenType operator of
-    BANG -> return (VBoolean $ not $ isTruthy val, newEnv)
-    MINUS -> case toNumber val operator of
-      Right n -> return (VNumber $ -n, newEnv)
-      Left err -> lift $ throwError err
-    _ -> error "unexpected opType when interpreting unary"
-interpretExpr env (Grouping expr) = interpretExpr env expr
-interpretExpr env (Variable tok) =
-  case get env tok of
-    Right val -> return (val, env)
-    Left err -> lift $ throwError err
-interpretExpr env (AndExpr left _ right) = do
-  (val, newEnv) <- interpretExpr env left
-  if not $ isTruthy val
-    then return (val, newEnv)
-    else interpretExpr newEnv right
-interpretExpr env (OrExpr left _ right) = do
-  (val, newEnv) <- interpretExpr env left
-  if isTruthy val
-    then return (val, newEnv)
-    else interpretExpr newEnv right
-interpretExpr env (Primary lit) = return (fromLiteral lit, env)
+defaultInterpreter :: Interpreter
+defaultInterpreter =
+  let clockToken =
+        MkToken
+          { tokenType = IDENTIFIER
+          , offset = 0
+          , literal = None
+          , line = 0
+          , lexeme = "clock"
+          }
+      clockFunc interp _ = do
+        time <- liftIO getPOSIXTime
+        return (VNumber (realToFrac time :: Double), interp)
+      clock = VFunction [] clockToken "<native fn>" clockFunc
+      globalEnv = Environment (Map.fromList [("clock", clock)]) Nothing
+      baseEnv = Environment Map.empty (Just $ EnvID 0)
+      table = Map.fromList [(EnvID 0, globalEnv), (EnvID 1, baseEnv)]
+   in Interpreter table (EnvID 1) (EnvID 1)
 
-call :: Environment -> Value -> [Value] -> InterpretExprResult
-call env callee args =
-  let func = getFunc env callee
-      output = lift $ func env args
-   in output
+envWithParent :: Interpreter -> Interpreter
+envWithParent (Interpreter table current largestId) =
+  case table Map.!? current of
+    Just _ ->
+      let outputId = nextLargest largestId
+          emptyEnv = Environment Map.empty $ Just current
+          newTable = Map.insert outputId emptyEnv table
+          outputInterpreter = Interpreter newTable outputId outputId
+       in outputInterpreter
+    Nothing -> error "parentId doesn't exist in Map"
 
-toNumberPair :: Value -> Value -> Token -> Either String (Double, Double)
-toNumberPair left right op = case (toNumber left op, toNumber right op) of
-  (Right l, Right r) -> Right (l, r)
-  _ -> Left $ runtimeError op "Operands must be numbers."
+changeToParent :: Interpreter -> Interpreter
+changeToParent (Interpreter table current largestId) =
+  case table Map.!? current of
+    Just (Environment _ parent) ->
+      case parent of
+        Just pEnv -> Interpreter table pEnv largestId
+        Nothing -> error "can't change to parent when no parent"
+    Nothing -> error "parentId doesn't exist in Map"
 
-toNumber :: Value -> Token -> Either String Double
-toNumber (VNumber n) _ = Right n
-toNumber _ token = Left $ runtimeError token "Operand must be a number."
+define :: Interpreter -> Token -> Value -> Interpreter
+define (Interpreter table current largestId) token value =
+  case table Map.!? current of
+    Just (Environment envTable parent) ->
+      let envTable' = Map.insert (lexeme token) value envTable
+          env' = Environment envTable' parent
+          table' = Map.insert current env' table
+       in Interpreter table' current largestId
+    Nothing -> error "can't define in impossible env"
 
-isTruthy :: Value -> Bool
-isTruthy VNil = False
-isTruthy (VBoolean b) = b
-isTruthy _ = True
+assign :: Interpreter -> Token -> Value -> Either String Interpreter
+assign (Interpreter table current largestId) token value =
+  case table Map.!? current of
+    Just (Environment envTable parent)
+      | Map.member (lexeme token) envTable ->
+          let envTable' = Map.insert (lexeme token) value envTable
+              env' = Environment envTable' parent
+              table' = Map.insert current env' table
+              interp' = Interpreter table' current largestId
+           in Right interp'
+      | Just pEnv <- parent -> do
+          (Interpreter table' _ _) <- assign (Interpreter table pEnv largestId) token value
+          return $ Interpreter table' current largestId
+      | Nothing <- parent ->
+          Left $ runtimeError token $ "Undefined variable '" ++ lexeme token ++ "'."
+    Nothing -> error "Can't assign in impossible env"
+
+get :: Interpreter -> Token -> Either String Value
+get (Interpreter table current largestId) token =
+  case table Map.!? current of
+    Just (Environment envTable parent) ->
+      case envTable Map.!? lexeme token of
+        Just val -> Right val
+        Nothing ->
+          case parent of
+            Just pEnv -> get (Interpreter table pEnv largestId) token
+            Nothing -> Left $ runtimeError token ("Undefined variable '" ++ lexeme token ++ "'.")
+    Nothing -> error "Can't get from impossible nev"
+
+restoreRunningEnv :: Interpreter -> Interpreter -> Interpreter
+restoreRunningEnv (Interpreter _ env _) = setRunningEnv env
+
+setRunningEnv :: EnvID -> Interpreter -> Interpreter
+setRunningEnv envId (Interpreter table _ largest) = Interpreter table envId largest
+
+data Value
+  = VNumber Double
+  | VStr String
+  | VBoolean Bool
+  | VNil
+  | VCall Int Token String
+  | VFunction [Token] Token String (Interpreter -> [Value] -> ExceptT String IO (Value, Interpreter))
+
+instance Eq Value where
+  (VNumber n1) == (VNumber n2) = n1 == n2
+  (VStr s1) == (VStr s2) = s1 == s2
+  (VBoolean b1) == (VBoolean b2) = b1 == b2
+  VNil == VNil = True
+  (VCall arity1 tok1 name1) == (VCall arity2 tok2 name2) = arity1 == arity2 && tok1 == tok2 && name1 == name2
+  (VFunction params1 callee1 name1 _) == (VFunction params2 callee2 name2 _) =
+    params1 == params2 && callee1 == callee2 && name1 == name2
+  _ == _ = False
+
+instance Ord Value where
+  compare (VNumber n1) (VNumber n2) = compare n1 n2
+  compare (VNumber _) _ = LT
+  compare (VStr s1) (VStr s2) = compare s1 s2
+  compare (VStr _) other = case other of
+    VNumber _ -> GT
+    _ -> LT
+  compare (VBoolean b1) (VBoolean b2) = compare b1 b2
+  compare (VBoolean _) other = case other of
+    VNumber _ -> GT
+    VStr _ -> GT
+    _ -> LT
+  compare VNil VNil = EQ
+  compare VNil other = case other of
+    VNumber _ -> GT
+    VStr _ -> GT
+    VBoolean _ -> GT
+    _ -> LT
+  compare (VCall arity1 tok1 name1) (VCall arity2 tok2 name2) = compare (arity1, tok1, name1) (arity2, tok2, name2)
+  compare VCall{} other = case other of
+    VFunction{} -> LT
+    _ -> GT
+  compare (VFunction params1 callee1 name1 _) (VFunction params2 callee2 name2 _) =
+    compare (params1, callee1, name1) (params2, callee2, name2)
+  compare VFunction{} _ = GT
+
+instance Show Value where -- TODO: change literal to not include identifiers
+  show (VNumber n) = formatNumber n
+   where
+    formatNumber :: Double -> String
+    formatNumber x
+      | isNegativeZero x = "-0"
+      | x == fromInteger (round x) = show (round x :: Integer)
+      | otherwise = showFFloat Nothing x ""
+  show (VStr s) = s
+  show (VBoolean b) = if b then "true" else "false"
+  show VNil = "nil"
+  show (VFunction _ _ s _) = s
+  show (VCall _ _ s) = s
+
+fromLiteral :: Literal -> Value
+fromLiteral (Tokens.Number n) = VNumber n
+fromLiteral (Tokens.Str s) = VStr s
+fromLiteral (Tokens.Boolean b) = VBoolean b
+fromLiteral Tokens.Nil = VNil
+fromLiteral _ = error "can't convert from literal"

@@ -1,8 +1,8 @@
 module Main (main) where
 
 import Control.Monad.Except (runExceptT)
-import Phases.Environment
 import Phases.Interpreter
+import Phases.Interpret
 import Phases.Parser
 import Phases.Scanner
 import Phases.Stmt
@@ -28,7 +28,7 @@ checkArgs _ = do
 
 -- | Creates Lox repl
 runPrompt :: IO () -- deal with environment persisting
-runPrompt = go defaultEnvironment
+runPrompt = go defaultInterpreter
  where
   go env = do
     putStr "> "
@@ -59,7 +59,7 @@ runPrompt = go defaultEnvironment
 runFile :: String -> IO ()
 runFile filepath = do
   contents <- readFile filepath
-  errOrEnv <- runStatements defaultEnvironment contents
+  errOrEnv <- runStatements defaultInterpreter contents
   case errOrEnv of
     Right _ -> return ()
     Left (ScanOrParseErr errs) -> do
@@ -69,7 +69,7 @@ runFile filepath = do
       toStderr [err]
       exitWith $ ExitFailure 70
 
-runStatements :: Environment -> String -> IO (Either Errs Environment)
+runStatements :: Interpreter -> String -> IO (Either Errs Interpreter)
 runStatements env contents = do
   let scanResult = scanTokens contents
   case scanResult of
@@ -86,7 +86,7 @@ runStatements env contents = do
         Right _ -> return $ Left $ ScanOrParseErr errs
         Left parseErrs -> return $ Left $ ScanOrParseErr $ errs ++ parseErrs
  where
-  go :: Environment -> [Stmt] -> IO (Either String Environment)
+  go :: Interpreter -> [Stmt] -> IO (Either String Interpreter)
   go e (s : rest) = do
     newEnvOrErr <- runInterp e s
     case newEnvOrErr of
@@ -100,7 +100,7 @@ toStderr (err : errs) = do
   hPutStrLn stderr err
   toStderr errs
 
-runInterp :: Environment -> Stmt -> IO (Either String Environment)
+runInterp :: Interpreter -> Stmt -> IO (Either String Interpreter)
 runInterp env s = do
   interpOutput <- runExceptT $ runExceptT $ interpret env s
   case interpOutput of
