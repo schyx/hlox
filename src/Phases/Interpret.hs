@@ -1,13 +1,13 @@
 module Phases.Interpret (interpret, InterpreterOutput, interpretExpr) where
 
 import Control.Monad (foldM)
-import Control.Monad.Except (ExceptT(..), runExceptT, throwError)
+import Control.Monad.Except (ExceptT (..), runExceptT, throwError)
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Trans.Class (lift)
 import qualified Data.Map as Map
 import Error
-import Phases.Interpreter
 import Phases.Expr
+import Phases.Interpreter
 import Phases.Stmt
 import Tokens
 
@@ -16,61 +16,61 @@ type InterpretExprResult = ExceptT (Value, Interpreter) (ExceptT String IO) (Val
 type InterpreterOutput = ExceptT (Value, Interpreter) (ExceptT String IO) Interpreter
 
 interpret :: Interpreter -> Stmt -> InterpreterOutput
-interpret env (Print expr) = do
-  (val, newEnv) <- interpretExpr env expr
+interpret interp (Print expr) = do
+  (val, interp') <- interpretExpr interp expr
   liftIO $ print val
-  return newEnv
-interpret env (Expression expr) = do
-  (_, newEnv) <- interpretExpr env expr
-  return newEnv
-interpret env (Var name initializer) = do
-  (val, newEnv) <- interpretExpr env initializer
-  return $ define newEnv name val
-interpret env (Block stmts) = do
-  let blockEnv = envWithParent env
-  newBlockEnv <- execBlock blockEnv stmts
-  return $ changeToParent newBlockEnv
-interpret env (If condition ifBranch (Just elseBranch)) = do
-  (val, newEnv) <- interpretExpr env condition
-  interpret newEnv (if isTruthy val then ifBranch else elseBranch)
-interpret env (If condition ifBranch Nothing) = do
-  (val, newEnv) <- interpretExpr env condition
-  if isTruthy val then interpret newEnv ifBranch else return newEnv
-interpret env (While condition whileBlock) = do
-  (val, newEnv) <- interpretExpr env condition
+  return interp'
+interpret interp (Expression expr) = do
+  (_, interp') <- interpretExpr interp expr
+  return interp'
+interpret interp (Var name initializer) = do
+  (val, interp') <- interpretExpr interp initializer
+  return $ define interp' name val
+interpret interp (Block stmts) = do
+  let interp' = createChildEnv interp
+  interp'' <- execBlock interp' stmts
+  return $ changeToParent interp''
+interpret interp (If condition ifBranch (Just elseBranch)) = do
+  (val, interp') <- interpretExpr interp condition
+  interpret interp' (if isTruthy val then ifBranch else elseBranch)
+interpret interp (If condition ifBranch Nothing) = do
+  (val, interp') <- interpretExpr interp condition
+  if isTruthy val then interpret interp' ifBranch else return interp'
+interpret interp (While condition whileBlock) = do
+  (val, interp') <- interpretExpr interp condition
   if isTruthy val
     then do
-      afterStmtEnv <- interpret newEnv whileBlock
-      interpret afterStmtEnv (While condition whileBlock)
-    else return newEnv
-interpret env (Function fname params body) = do
+      interp'' <- interpret interp' whileBlock
+      interpret interp'' (While condition whileBlock)
+    else return interp'
+interpret interp (Function fname params body) = do
   let functionF interpreter args = do
-        let enclosingEnv = restoreRunningEnv env interpreter
-        let fEnvInitial = envWithParent enclosingEnv
-        let fEnv = foldr (\(tok, val) prevEnv -> define prevEnv tok val) fEnvInitial (zip params args)
-        run <- runExceptT $ execBlock fEnv body
+        let enclosingInterp = restoreRunningEnv interp interpreter
+        let fInterpInitial = createChildEnv enclosingInterp
+        let fInterp = foldr (\(tok, val) prevInterp -> define prevInterp tok val) fInterpInitial (zip params args)
+        run <- runExceptT $ execBlock fInterp body
         case run of
-          Left (val, outputEnv) -> ExceptT $ return $ Right (val, outputEnv)
-          Right outputEnv -> ExceptT $ return $ Right (VNil, outputEnv)
+          Left (val, outputInterp) -> ExceptT $ return $ Right (val, outputInterp)
+          Right outputInterp -> ExceptT $ return $ Right (VNil, outputInterp)
   let functionVal = VFunction params fname ("<fn " ++ lexeme fname ++ ">") functionF
-  return $ define env fname functionVal
-interpret env (Return _ expr) = do
-  (val, afterExprEnv) <- interpretExpr env expr
-  throwError (val, afterExprEnv)
+  return $ define interp fname functionVal
+interpret interp (Return _ expr) = do
+  (val, interp') <- interpretExpr interp expr
+  throwError (val, interp')
 
 execBlock :: Interpreter -> [Stmt] -> ExceptT (Value, Interpreter) (ExceptT String IO) Interpreter
 execBlock = foldM interpret
 
 interpretExpr :: Interpreter -> Expr -> InterpretExprResult
-interpretExpr env (Call callee paren argExprs) = do
-  (val, newEnv) <- interpretExpr env callee
-  (args, afterParamsEnv) <- interpretExprs newEnv argExprs
+interpretExpr interp (Call callee paren argExprs) = do
+  (val, callerInterp) <- interpretExpr interp callee
+  (args, argsInterp) <- interpretExprs callerInterp argExprs
   case val of
     (VFunction params _ _ func) ->
       if length params == length args
         then do
-          (outputVal, afterFuncEnv) <- lift $ func afterParamsEnv args
-          return (outputVal, restoreRunningEnv env afterFuncEnv)
+          (outputVal, outputInterp) <- lift $ func argsInterp args
+          return (outputVal, restoreRunningEnv interp outputInterp)
         else
           lift . throwError
             $ runtimeError
@@ -79,21 +79,21 @@ interpretExpr env (Call callee paren argExprs) = do
     _ -> lift . throwError $ runtimeError paren "Can only call functions and classes."
  where
   interpretExprs :: Interpreter -> [Expr] -> ExceptT (Value, Interpreter) (ExceptT String IO) ([Value], Interpreter)
-  interpretExprs argsEnv [] = return ([], argsEnv)
-  interpretExprs argsEnv (expr : exprs) = do
-    (val, newEnv) <- interpretExpr argsEnv expr
-    (params, afterParamsEnv) <- interpretExprs newEnv exprs
-    return (val : params, afterParamsEnv)
-interpretExpr env (Assign name expr) = do
-  (val, newEnv) <- interpretExpr env expr
-  case assign newEnv name val of
-    Right assignedEnv -> return (val, assignedEnv)
+  interpretExprs argsInterp [] = return ([], argsInterp)
+  interpretExprs argsInterp (expr : exprs) = do
+    (val, interp') <- interpretExpr argsInterp expr
+    (params, afterParamsInterp) <- interpretExprs interp' exprs
+    return (val : params, afterParamsInterp)
+interpretExpr interp (Assign name expr) = do
+  (val, interp') <- interpretExpr interp expr
+  case assign interp' name val of
+    Right assignedInterp -> return (val, assignedInterp)
     Left err -> lift $ throwError err
-interpretExpr env (Binary left operator right) = do
-  (leftVal, afterLeftEnv) <- interpretExpr env left
-  (rightVal, afterRightEnv) <- interpretExpr afterLeftEnv right
+interpretExpr interp (Binary left operator right) = do
+  (leftVal, afterLeftInterp) <- interpretExpr interp left
+  (rightVal, afterRightInterp) <- interpretExpr afterLeftInterp right
   output <- getOutput leftVal rightVal
-  return (output, afterRightEnv)
+  return (output, afterRightInterp)
  where
   getOutput :: Value -> Value -> ExceptT (Value, Interpreter) (ExceptT String IO) Value
   getOutput leftVal rightVal
@@ -133,30 +133,30 @@ interpretExpr env (Binary left operator right) = do
       , (SLASH, (/))
       , (MINUS, (-))
       ]
-interpretExpr env (Unary operator expr) = do
-  (val, newEnv) <- interpretExpr env expr
+interpretExpr interp (Unary operator expr) = do
+  (val, interp') <- interpretExpr interp expr
   case tokenType operator of
-    BANG -> return (VBoolean $ not $ isTruthy val, newEnv)
+    BANG -> return (VBoolean $ not $ isTruthy val, interp')
     MINUS -> case toNumber val operator of
-      Right n -> return (VNumber $ -n, newEnv)
+      Right n -> return (VNumber $ -n, interp')
       Left err -> lift $ throwError err
     _ -> error "unexpected opType when interpreting unary"
-interpretExpr env (Grouping expr) = interpretExpr env expr
-interpretExpr env (Variable tok) =
-  case get env tok of
-    Right val -> return (val, env)
+interpretExpr interp (Grouping expr) = interpretExpr interp expr
+interpretExpr interp (Variable tok) =
+  case get interp tok of
+    Right val -> return (val, interp)
     Left err -> lift $ throwError err
-interpretExpr env (AndExpr left _ right) = do
-  (val, newEnv) <- interpretExpr env left
+interpretExpr interp (AndExpr left _ right) = do
+  (val, interp') <- interpretExpr interp left
   if not $ isTruthy val
-    then return (val, newEnv)
-    else interpretExpr newEnv right
-interpretExpr env (OrExpr left _ right) = do
-  (val, newEnv) <- interpretExpr env left
+    then return (val, interp')
+    else interpretExpr interp' right
+interpretExpr interp (OrExpr left _ right) = do
+  (val, interp') <- interpretExpr interp left
   if isTruthy val
-    then return (val, newEnv)
-    else interpretExpr newEnv right
-interpretExpr env (Primary lit) = return (fromLiteral lit, env)
+    then return (val, interp')
+    else interpretExpr interp' right
+interpretExpr interp (Primary lit) = return (fromLiteral lit, interp)
 
 toNumberPair :: Value -> Value -> Token -> Either String (Double, Double)
 toNumberPair left right op = case (toNumber left op, toNumber right op) of

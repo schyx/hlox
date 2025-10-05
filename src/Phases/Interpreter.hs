@@ -3,7 +3,7 @@ module Phases.Interpreter (
   EnvID (..),
   defaultInterpreter,
   fromLiteral,
-  envWithParent,
+  createChildEnv,
   changeToParent,
   define,
   assign,
@@ -51,8 +51,8 @@ defaultInterpreter =
       table = Map.fromList [(EnvID 0, globalEnv), (EnvID 1, baseEnv)]
    in Interpreter table (EnvID 1) (EnvID 1)
 
-envWithParent :: Interpreter -> Interpreter
-envWithParent (Interpreter table current largestId) =
+createChildEnv :: Interpreter -> Interpreter
+createChildEnv (Interpreter table current largestId) =
   case table Map.!? current of
     Just _ ->
       let outputId = nextLargest largestId
