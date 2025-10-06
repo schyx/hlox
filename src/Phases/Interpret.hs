@@ -1,4 +1,4 @@
-module Phases.Interpret (interpret, InterpreterOutput, interpretExpr) where
+module Phases.Interpret (interpret, InterpretOutput, interpretExpr) where
 
 import Control.Monad (foldM)
 import Control.Monad.Except (ExceptT (..), runExceptT, throwError)
@@ -11,11 +11,9 @@ import Phases.Interpreter
 import Phases.Stmt
 import Tokens
 
-type InterpretExprResult = ExceptT (Value, Interpreter) (ExceptT String IO) (Value, Interpreter)
+type InterpretOutput a = ExceptT (Value, Interpreter) (ExceptT String IO) a
 
-type InterpreterOutput = ExceptT (Value, Interpreter) (ExceptT String IO) Interpreter
-
-interpret :: Interpreter -> Stmt -> InterpreterOutput
+interpret :: Interpreter -> Stmt -> InterpretOutput Interpreter
 interpret interp (Print expr) = do
   (val, interp') <- interpretExpr interp expr
   liftIO $ print val
@@ -58,10 +56,10 @@ interpret interp (Return _ expr) = do
   (val, interp') <- interpretExpr interp expr
   throwError (val, interp')
 
-execBlock :: Interpreter -> [Stmt] -> ExceptT (Value, Interpreter) (ExceptT String IO) Interpreter
+execBlock :: Interpreter -> [Stmt] -> InterpretOutput Interpreter
 execBlock = foldM interpret
 
-interpretExpr :: Interpreter -> Expr -> InterpretExprResult
+interpretExpr :: Interpreter -> Expr -> InterpretOutput (Value, Interpreter)
 interpretExpr interp (Call callee paren argExprs) = do
   (val, callerInterp) <- interpretExpr interp callee
   (args, argsInterp) <- interpretExprs callerInterp argExprs
@@ -78,7 +76,7 @@ interpretExpr interp (Call callee paren argExprs) = do
             $ "Expected " ++ show (length params) ++ " arguments but got " ++ show (length args) ++ "."
     _ -> lift . throwError $ runtimeError paren "Can only call functions and classes."
  where
-  interpretExprs :: Interpreter -> [Expr] -> ExceptT (Value, Interpreter) (ExceptT String IO) ([Value], Interpreter)
+  interpretExprs :: Interpreter -> [Expr] -> InterpretOutput ([Value], Interpreter)
   interpretExprs argsInterp [] = return ([], argsInterp)
   interpretExprs argsInterp (expr : exprs) = do
     (val, interp') <- interpretExpr argsInterp expr
@@ -95,7 +93,7 @@ interpretExpr interp (Binary left operator right) = do
   output <- getOutput leftVal rightVal
   return (output, afterRightInterp)
  where
-  getOutput :: Value -> Value -> ExceptT (Value, Interpreter) (ExceptT String IO) Value
+  getOutput :: Value -> Value -> InterpretOutput Value
   getOutput leftVal rightVal
     | tokenType operator `elem` [BANG_EQUAL, EQUAL_EQUAL] =
         return $
