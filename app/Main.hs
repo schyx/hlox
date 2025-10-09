@@ -3,7 +3,7 @@ module Main (main) where
 import Control.Monad.Except (runExceptT)
 import Phases.Interpreter
 import Phases.Interpret
-import Phases.Parser
+import Phases.Parse
 import Phases.Scanner
 import Phases.Stmt
 import System.Environment

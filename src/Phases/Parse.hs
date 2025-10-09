@@ -1,4 +1,4 @@
-module Phases.Parser (parse, ParseResult, expression) where
+module Phases.Parse (parse, ParseResult, expression) where
 
 import Error
 import Phases.Expr

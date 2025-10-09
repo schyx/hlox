@@ -27,10 +27,11 @@ library
   exposed-modules:
       Error
       Lib
+      Parser
       Phases.Expr
       Phases.Interpret
       Phases.Interpreter
-      Phases.Parser
+      Phases.Parse
       Phases.Scanner
       Phases.Stmt
       Tokens
@@ -72,7 +73,6 @@ test-suite hlox-test
   type: exitcode-stdio-1.0
   main-is: Spec.hs
   other-modules:
-      ScannerTests
       Paths_hlox
   autogen-modules:
       Paths_hlox

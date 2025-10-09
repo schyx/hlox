@@ -2,12 +2,12 @@
 
 module Phases.Scanner (scanTokens, ScanResult) where
 
-import Control.Applicative (Alternative (empty, many, (<|>)))
-import Data.Bifunctor (Bifunctor (second))
+import Control.Applicative (Alternative (many, (<|>)))
 import Data.Char (isAlpha, isAlphaNum, isDigit)
 import qualified Data.Map as Map
 import Data.Maybe (fromMaybe, listToMaybe)
 import Error (report)
+import Parser (Parser (Parser, runParser))
 import Tokens
 
 data ScannerData = ScannerData {restOfInput :: String, scannerLine :: Int, scannerOffset :: Int}
@@ -22,23 +22,13 @@ increment sd = sd{restOfInput = tail $ restOfInput sd, scannerOffset = scannerOf
 scanNewline :: ScannerData -> ScannerData
 scanNewline sd = sd{restOfInput = tail $ restOfInput sd, scannerOffset = 1, scannerLine = scannerLine sd + 1}
 
-newtype LoxScanner a = LoxScanner {runLoxScanner :: ScannerData -> Maybe (ScannerData, a)}
+type LoxScanner a = Parser ScannerData a
 
-instance Functor LoxScanner where
-  fmap f ls = LoxScanner $ fmap (second f) . runLoxScanner ls
+makeLoxScanner :: (ScannerData -> Maybe (ScannerData, a)) -> LoxScanner a
+makeLoxScanner = Parser
 
-instance Applicative LoxScanner where
-  pure x = LoxScanner $ \inData -> Just (inData, x)
-  LoxScanner lsf <*> LoxScanner lsx =
-    LoxScanner $ \inData -> do
-      (midData, f) <- lsf inData
-      (endData, x) <- lsx midData
-      Just (endData, f x)
-
-instance Alternative LoxScanner where
-  empty = LoxScanner $ const Nothing
-  (LoxScanner ls1) <|> (LoxScanner ls2) =
-    LoxScanner $ \inData -> ls1 inData <|> ls2 inData
+runLoxScanner :: LoxScanner a -> (ScannerData -> Maybe (ScannerData, a))
+runLoxScanner = runParser
 
 type ScanResult = ([String], [Token])
 
@@ -100,7 +90,7 @@ stringS =
        )
  where
   toStringIdentifier = createToken (const STRING) Str (\string -> "\"" ++ string ++ "\"")
-  unterminatedString = LoxScanner $ \inData ->
+  unterminatedString = makeLoxScanner $ \inData ->
     Just (inData, const (Left $ report (scannerLine inData) "" "Unterminated string."))
 
 numS :: LoxScanner (Either String Token)
@@ -139,7 +129,7 @@ comment :: LoxScanner (String, (Int, Int))
 comment = twoCharS (== ('/', '/')) <* spanS (/= '\n')
 
 unknownChars :: LoxScanner (Either String Token)
-unknownChars = LoxScanner $ \inData ->
+unknownChars = makeLoxScanner $ \inData ->
   if null $ restOfInput inData
     then Nothing
     else
@@ -149,7 +139,7 @@ unknownChars = LoxScanner $ \inData ->
         )
 
 twoCharS :: ((Char, Char) -> Bool) -> LoxScanner (String, (Int, Int))
-twoCharS predicate = LoxScanner $ \inData ->
+twoCharS predicate = makeLoxScanner $ \inData ->
   case restOfInput inData of
     id1 : id2 : _
       | predicate (id1, id2) -> Just (increment $ increment inData, ([id1, id2], lineAndOffset inData))
@@ -157,7 +147,7 @@ twoCharS predicate = LoxScanner $ \inData ->
     _ -> Nothing
 
 charS :: (Char -> Bool) -> LoxScanner (Char, (Int, Int))
-charS predicate = LoxScanner f
+charS predicate = makeLoxScanner f
  where
   f inData = case listToMaybe $ restOfInput inData of
     Nothing -> Nothing
@@ -181,7 +171,7 @@ spanSNoEmpty predicate = splitSNoEmpty $ span predicate
 
 splitS :: (String -> (String, String)) -> LoxScanner (String, (Int, Int))
 splitS predicate =
-  LoxScanner $ \inData ->
+  makeLoxScanner $ \inData ->
     let (string, _) = predicate $ restOfInput inData
         step oldData [] = oldData
         step oldData ('\n' : rest) = step (scanNewline oldData) rest
@@ -191,7 +181,7 @@ splitS predicate =
 
 splitSNoEmpty :: (String -> (String, String)) -> LoxScanner (String, (Int, Int))
 splitSNoEmpty predicate =
-  LoxScanner $ \inData ->
+  makeLoxScanner $ \inData ->
     let (string, _) = predicate $ restOfInput inData
         step oldData [] = oldData
         step oldData ('\n' : rest) = step (scanNewline oldData) rest
