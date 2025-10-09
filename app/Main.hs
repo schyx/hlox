@@ -38,12 +38,9 @@ runPrompt = go defaultInterpreter
     case errOrEnv of
       Right newEnv -> go newEnv
       Left _ -> do
-        let scanResult = scanTokens input
-        case scanResult of
-          (Left errs, _) -> do
-            toStderr errs
-            go env
-          (Right _, tokens) -> case expression tokens [] of
+        let (errs, tokens) = scanTokens input
+        if null errs
+          then case expression tokens [] of
             Left (err, _) -> do
               toStderr err
               go env
@@ -54,6 +51,24 @@ runPrompt = go defaultInterpreter
                 Right (Left _) -> error "got return value?"
                 Right (Right (lit, _)) -> print lit >> go env
             Right (_, _, _) -> toStderr ["Too many tokens."] >> go env
+          else do
+            toStderr errs
+            go env
+        -- case scanResult of
+        --   (Left errs, _) -> do
+        --     toStderr errs
+        --     go env
+        --   (Right _, tokens) -> case expression tokens [] of
+        --     Left (err, _) -> do
+        --       toStderr err
+        --       go env
+        --     Right (expr, [_eof], _) -> do
+        --       exprOutput <- runExceptT $ runExceptT $ interpretExpr env expr
+        --       case exprOutput of
+        --         Left err -> toStderr [err] >> go env
+        --         Right (Left _) -> error "got return value?"
+        --         Right (Right (lit, _)) -> print lit >> go env
+        --     Right (_, _, _) -> toStderr ["Too many tokens."] >> go env
 
 -- | Runs a Lox file
 runFile :: String -> IO ()
@@ -71,18 +86,18 @@ runFile filepath = do
 
 runStatements :: Interpreter -> String -> IO (Either Errs Interpreter)
 runStatements env contents = do
-  let scanResult = scanTokens contents
-  case scanResult of
-    (Right (), tokens) -> case parse tokens of
+  let (errs, tokens) = scanTokens contents
+  if null errs
+    then case parse tokens of
       Right stmts -> do
         envOrErr <- go env stmts
         case envOrErr of
           Right newEnv -> return $ Right newEnv
           Left err -> return $ Left $ RuntimeErr err
-      Left errs -> do
-        return $ Left $ ScanOrParseErr errs
-    (Left errs, tokens) -> do
-      case parse tokens of 
+      Left parseErrs -> do
+        return $ Left $ ScanOrParseErr parseErrs
+    else do
+      case parse tokens of
         Right _ -> return $ Left $ ScanOrParseErr errs
         Left parseErrs -> return $ Left $ ScanOrParseErr $ errs ++ parseErrs
  where

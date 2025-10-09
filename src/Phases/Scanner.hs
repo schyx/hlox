@@ -1,298 +1,222 @@
+{-# LANGUAGE LambdaCase #-}
+
 module Phases.Scanner (scanTokens, ScanResult) where
 
-import Data.Char
+import Control.Applicative (Alternative (empty, many, (<|>)))
+import Data.Bifunctor (Bifunctor (second))
+import Data.Char (isAlpha, isAlphaNum, isDigit)
 import qualified Data.Map as Map
-import Error
+import Data.Maybe (fromMaybe, listToMaybe)
+import Error (report)
 import Tokens
 
-type ScanResult = (Either [String] (), [Token])
+data ScannerData = ScannerData {restOfInput :: String, scannerLine :: Int, scannerOffset :: Int}
+  deriving (Show)
 
--- | Implements scanning phase of the interpreter
+lineAndOffset :: ScannerData -> (Int, Int)
+lineAndOffset (ScannerData _ l o) = (l, o)
+
+increment :: ScannerData -> ScannerData
+increment sd = sd{restOfInput = tail $ restOfInput sd, scannerOffset = scannerOffset sd + 1}
+
+scanNewline :: ScannerData -> ScannerData
+scanNewline sd = sd{restOfInput = tail $ restOfInput sd, scannerOffset = 1, scannerLine = scannerLine sd + 1}
+
+newtype LoxScanner a = LoxScanner {runLoxScanner :: ScannerData -> Maybe (ScannerData, a)}
+
+instance Functor LoxScanner where
+  fmap f ls = LoxScanner $ fmap (second f) . runLoxScanner ls
+
+instance Applicative LoxScanner where
+  pure x = LoxScanner $ \inData -> Just (inData, x)
+  LoxScanner lsf <*> LoxScanner lsx =
+    LoxScanner $ \inData -> do
+      (midData, f) <- lsf inData
+      (endData, x) <- lsx midData
+      Just (endData, f x)
+
+instance Alternative LoxScanner where
+  empty = LoxScanner $ const Nothing
+  (LoxScanner ls1) <|> (LoxScanner ls2) =
+    LoxScanner $ \inData -> ls1 inData <|> ls2 inData
+
+type ScanResult = ([String], [Token])
+
 scanTokens :: String -> ScanResult
 scanTokens contents =
-  case scanHelper contents 1 1 (Right (), []) of
-    -- reverse the list because we build it up in reverse order
-    (Left errs, toks) -> (Left $ reverse errs, reverse toks)
-    (Right _, tokens) -> (Right (), reverse tokens)
+  addResult
+    ([], [])
+    $ snd
+    $ fromMaybe undefined
+    $ runLoxScanner (many scanner) (ScannerData{restOfInput = contents, scannerLine = 1, scannerOffset = 1})
+ where
+  addResult (errs, toks) [] =
+    ( reverse errs
+    , reverse $ MkToken{tokenType = EOF, offset = 1, literal = Nil, line = 1, lexeme = ""} : toks
+    )
+  addResult (errs, toks) ((Left err) : others) = addResult (err : errs, toks) others
+  addResult (errs, toks) ((Right tok) : others) = addResult (errs, tok : toks) others
 
-scanHelper :: String -> Int -> Int -> ScanResult -> ScanResult
-scanHelper [] currentLine currentOffset currentTokens =
-  addToResult currentTokens $
+scanner :: LoxScanner (Either String Token)
+scanner =
+  ignore
+    *> (identifierS <|> numS <|> twoCharToken <|> singleCharToken <|> stringS <|> unknownChars)
+    <* ignore
+
+ignore :: LoxScanner [(String, (Int, Int))]
+ignore = many (whitespace <|> comment <|> newline)
+
+whitespace :: LoxScanner (String, (Int, Int))
+whitespace = spanSNoEmpty (`elem` " \t\r")
+
+newline :: LoxScanner (String, (Int, Int))
+newline = spanSNoEmpty (== '\n')
+
+identifierS :: LoxScanner (Either String Token)
+identifierS =
+  toIdentifier
+    <$> ( combineStringMetadata
+            <$> oneCharStringS (\c -> isAlpha c || c == '_')
+            <*> spanS (\c -> isAlphaNum c || c == '_')
+        )
+ where
+  toIdentifier :: (String, (Int, Int)) -> Either String Token
+  toIdentifier =
+    createToken
+      (\string -> fromMaybe IDENTIFIER $ Map.lookup string identifierTable)
+      ( \case
+          "true" -> Boolean True
+          "false" -> Boolean False
+          _ -> Nil
+      )
+      id
+
+stringS :: LoxScanner (Either String Token)
+stringS =
+  charS (== '"')
+    *> ( flip ($)
+          <$> spanS (/= '"')
+          <*> (toStringIdentifier <$ charS (== '"') <|> unterminatedString)
+       )
+ where
+  toStringIdentifier = createToken (const STRING) Str (\string -> "\"" ++ string ++ "\"")
+  unterminatedString = LoxScanner $ \inData ->
+    Just (inData, const (Left $ report (scannerLine inData) "" "Unterminated string."))
+
+numS :: LoxScanner (Either String Token)
+numS =
+  createToken (const NUMBER) (Number . read) id
+    <$> ( ( combineThreeStrings
+              <$> spanSNoEmpty isDigit
+              <*> oneCharStringS (== '.')
+              <*> spanSNoEmpty isDigit
+          )
+            <|> spanSNoEmpty isDigit
+        )
+ where
+  combineThreeStrings a b c = combineStringMetadata a $ combineStringMetadata b c
+
+singleCharToken :: LoxScanner (Either String Token)
+singleCharToken = addSingleCharToken <$> charS (`elem` "(){},.-+;*!>=</")
+ where
+  addSingleCharToken (c, (charLine, charOffset)) =
     Right
       MkToken
-        { tokenType = EOF
-        , offset = currentOffset
-        , literal = None
-        , line = currentLine
-        , lexeme = ""
+        { tokenType = singleCharTokenTable Map.! c
+        , offset = charOffset
+        , literal = Nil
+        , line = charLine
+        , lexeme = [c]
         }
-scanHelper (c : rest) currentLine currentOffset currentTokens
-  -- one char tokens
-  | c `elem` "(){},.-+;*" =
-      scanHelper rest currentLine (currentOffset + 1) $
-        addOneCharToken c currentTokens currentOffset currentLine
-  -- whitespace
-  | c `elem` " \t\r" =
-      scanHelper rest currentLine (currentOffset + 1) currentTokens
-  -- potentially two char tokens (helper function here?)
-  | c == '\n' =
-      scanHelper rest (currentLine + 1) 1 currentTokens
-  | c `elem` "!=><" =
-      let (ttype, newStr, tokenLen, tokenLexeme) = addPotentialTwoCharToken c rest
-       in scanHelper
-            newStr
-            currentLine
-            (currentOffset + tokenLen)
-            ( addToResult currentTokens $
-                Right
-                  MkToken
-                    { tokenType = ttype
-                    , offset = currentOffset
-                    , literal = None
-                    , line = currentLine
-                    , lexeme = tokenLexeme
-                    }
-            )
-  -- comments and divide
-  | c == '/' = case rest of
-      '/' : _ ->
-        scanHelper (removeUntilNewline rest) (currentLine + 1) 1 currentTokens
-      '*' : _ ->
-        let output = scanBlockComment (c : rest) currentLine currentOffset
-         in case output of
-              Right (newLine, newOffset, leftovers) -> scanHelper leftovers newLine newOffset currentTokens
-              Left err -> addToResult currentTokens $ Left err
-      _ ->
-        scanHelper rest currentLine (currentOffset + 1) $
-          addToResult currentTokens $
-            Right
-              MkToken
-                { tokenType = SLASH
-                , offset = currentOffset
-                , literal = None
-                , line = currentLine
-                , lexeme = "/"
-                }
-  -- numbers
-  | isDigit c =
-      let (num, leftovers, numLength, numLexeme) = scanNumber c rest
-       in scanHelper leftovers currentLine (currentOffset + numLength) $
-            addToResult currentTokens $
-              Right
-                MkToken
-                  { tokenType = NUMBER
-                  , offset = currentOffset
-                  , literal = Number num
-                  , line = currentLine
-                  , lexeme = numLexeme
-                  }
-  -- strings
-  | c == '"' =
-      let tokenOrErr = scanString rest currentLine currentOffset
-       in case tokenOrErr of
-            Left err ->
-              -- only occurs at end of string, so no need for line/offset checks
-              addToResult
-                (addToResult currentTokens $ Left err)
-                (Right $ MkToken{tokenType = EOF, offset = 0, literal = None, line = 0, lexeme = ""})
-            Right (token, leftovers, newLine, newOffset) ->
-              scanHelper leftovers newLine newOffset $ addToResult currentTokens $ Right token
-  -- identifiers
-  | isAlpha c || c == '_' =
-      let (token, leftovers, identifierLength) = scanIdentifier c currentLine currentOffset rest
-       in scanHelper leftovers currentLine (currentOffset + identifierLength) $
-            addToResult currentTokens $
-              Right token
-  -- unknown characters
-  | otherwise =
-      scanHelper rest currentLine (currentOffset + 1) $
-        addToResult currentTokens $
-          Left $
-            report currentLine "" "Unexpected character."
 
-scanBlockComment :: String -> Int -> Int -> Either String (Int, Int, String)
-scanBlockComment rest currentLine currentOffset = helper rest currentLine currentOffset 0
+twoCharToken :: LoxScanner (Either String Token)
+twoCharToken = addTwoCharToken <$> twoCharS (`elem` twoCharTokens)
  where
-  helper :: String -> Int -> Int -> Int -> Either String (Int, Int, String)
-  helper ('/' : '*' : leftovers) helperLine helperOffset numOpening =
-    helper leftovers helperLine (helperOffset + 2) (numOpening + 1)
-  helper ('*' : '/' : leftovers) helperLine helperOffset numOpening =
-    if numOpening == 1
-      then Right (helperLine, helperOffset + 2, leftovers)
-      else helper leftovers helperLine (helperOffset + 2) (numOpening - 1)
-  helper ('\n' : c : leftovers) helperLine _ numOpening =
-    helper (c : leftovers) (helperLine + 1) 1 numOpening
-  helper (_ : c : leftovers) helperLine helperOffset numOpening =
-    helper (c : leftovers) helperLine (helperOffset + 1) numOpening
-  helper _ helperLine _ _ = Left $ report helperLine "" "Unterminated block comment."
+  addTwoCharToken = createToken (twoCharTokenTable Map.!) (const Nil) id
+  twoCharTokens = [('!', '='), ('=', '='), ('<', '='), ('>', '=')]
 
-scanString :: String -> Int -> Int -> Either String (Token, String, Int, Int)
-scanString rest startLine startOffset = helper [] rest startLine $ startOffset + 1
+comment :: LoxScanner (String, (Int, Int))
+comment = twoCharS (== ('/', '/')) <* spanS (/= '\n')
+
+unknownChars :: LoxScanner (Either String Token)
+unknownChars = LoxScanner $ \inData ->
+  if null $ restOfInput inData
+    then Nothing
+    else
+      Just
+        ( increment inData
+        , Left $ report (scannerLine inData) "" "Unexpected character."
+        )
+
+twoCharS :: ((Char, Char) -> Bool) -> LoxScanner (String, (Int, Int))
+twoCharS predicate = LoxScanner $ \inData ->
+  case restOfInput inData of
+    id1 : id2 : _
+      | predicate (id1, id2) -> Just (increment $ increment inData, ([id1, id2], lineAndOffset inData))
+      | otherwise -> Nothing
+    _ -> Nothing
+
+charS :: (Char -> Bool) -> LoxScanner (Char, (Int, Int))
+charS predicate = LoxScanner f
  where
-  helper :: String -> String -> Int -> Int -> Either String (Token, String, Int, Int)
-  helper _ [] helperLine _ = Left $ report helperLine "" "Unterminated string."
-  helper buildup ('"' : leftovers) helperLine helperOffset =
-    getRightReturn buildup leftovers helperLine $ helperOffset + 1 -- account for "
-  helper buildup ('\n' : leftovers) helperLine _ =
-    helper ('\n' : buildup) leftovers (helperLine + 1) 1
-  helper buildup (currentChar : leftovers) helperLine helperOffset =
-    helper (currentChar : buildup) leftovers helperLine (helperOffset + 1)
-  getRightReturn buildup leftovers helperLine helperOffset =
-    let str = reverse buildup
-     in Right
-          ( MkToken
-              { tokenType = STRING
-              , offset = startOffset
-              , literal = Str str
-              , line = startLine
-              , lexeme = "\"" ++ str ++ "\""
-              }
-          , leftovers
-          , helperLine
-          , helperOffset
-          )
+  f inData = case listToMaybe $ restOfInput inData of
+    Nothing -> Nothing
+    Just c
+      | predicate c -> Just (increment inData, (c, lineAndOffset inData))
+      | otherwise -> Nothing
 
-scanIdentifier :: Char -> Int -> Int -> String -> (Token, String, Int)
-scanIdentifier c identifierLine identifierOffset = helper [c]
+oneCharStringS :: (Char -> Bool) -> LoxScanner (String, (Int, Int))
+oneCharStringS predicate = fstToString <$> charS predicate
  where
-  helper :: String -> String -> (Token, String, Int)
-  helper buildup [] = getReturn buildup []
-  helper buildup (currentChar : leftovers) =
-    if isAlphaNum currentChar || currentChar == '_'
-      then helper (currentChar : buildup) leftovers
-      else getReturn buildup (currentChar : leftovers)
-  getReturn buildup leftovers =
-    let identifier = reverse buildup
-     in case Map.lookup identifier identifierTable of
-          Nothing ->
-            ( MkToken
-                { tokenType = IDENTIFIER
-                , offset = identifierOffset
-                , literal = Identifier identifier
-                , line = identifierLine
-                , lexeme = identifier
-                }
-            , leftovers
-            , length buildup
-            )
-          Just NIL ->
-            ( MkToken
-                { tokenType = NIL
-                , offset = identifierOffset
-                , literal = Nil
-                , line = identifierLine
-                , lexeme = identifier
-                }
-            , leftovers
-            , length buildup
-            )
-          Just TRUE ->
-            ( MkToken
-                { tokenType = TRUE
-                , offset = identifierOffset
-                , literal = Boolean True
-                , line = identifierLine
-                , lexeme = identifier
-                }
-            , leftovers
-            , length buildup
-            )
-          Just FALSE ->
-            ( MkToken
-                { tokenType = FALSE
-                , offset = identifierOffset
-                , literal = Boolean False
-                , line = identifierLine
-                , lexeme = identifier
-                }
-            , leftovers
-            , length buildup
-            )
-          Just ttype ->
-            ( MkToken
-                { tokenType = ttype
-                , offset = identifierOffset
-                , literal = None
-                , line = identifierLine
-                , lexeme = identifier
-                }
-            , leftovers
-            , length buildup
-            )
-  identifierTable =
-    Map.fromList
-      [ ("and", AND)
-      , ("class", CLASS)
-      , ("else", ELSE)
-      , ("false", FALSE)
-      , ("fun", FUN)
-      , ("for", FOR)
-      , ("if", IF)
-      , ("nil", NIL)
-      , ("or", OR)
-      , ("print", PRINT)
-      , ("return", RETURN)
-      , ("super", SUPER)
-      , ("this", THIS)
-      , ("true", TRUE)
-      , ("var", VAR)
-      , ("while", WHILE)
-      ]
+  fstToString (c, x) = ([c], x)
 
-scanNumber :: Char -> String -> (Double, String, Int, String)
-scanNumber c = helper [c] False
- where
-  helper :: String -> Bool -> String -> (Double, String, Int, String)
-  helper buildup _ [] = getReturn buildup []
-  helper buildup True ('.' : leftovers) = getReturn buildup ('.' : leftovers)
-  helper buildup False ['.'] = getReturn buildup ['.']
-  helper buildup False ('.' : c2 : leftovers)
-    | isDigit c2 = helper ('.' : buildup) True (c2 : leftovers)
-    | otherwise = getReturn buildup ('.' : leftovers)
-  helper buildup seenDot (currentChar : leftovers) =
-    if isDigit currentChar
-      then helper (currentChar : buildup) seenDot leftovers
-      else getReturn buildup (currentChar : leftovers)
-  getReturn buildup leftovers =
-    let numString = reverse buildup
-     in (read numString :: Double, leftovers, length buildup, numString)
+combineStringMetadata :: (String, (Int, Int)) -> (String, (Int, Int)) -> (String, (Int, Int))
+combineStringMetadata (s1, x) (s2, _) = (s1 ++ s2, x)
 
-addPotentialTwoCharToken :: Char -> String -> (TokenType, String, Int, String)
-addPotentialTwoCharToken c rest
-  | (c2 : leftovers) <- rest, c == '!' && c2 == '=' = (BANG_EQUAL, leftovers, 2, "!=")
-  | (c2 : leftovers) <- rest, c == '=' && c2 == '=' = (EQUAL_EQUAL, leftovers, 2, "==")
-  | (c2 : leftovers) <- rest, c == '>' && c2 == '=' = (GREATER_EQUAL, leftovers, 2, ">=")
-  | (c2 : leftovers) <- rest, c == '<' && c2 == '=' = (LESS_EQUAL, leftovers, 2, "<=")
-  | otherwise = singleToken c
- where
-  singleToken char =
-    case Map.lookup char table of
-      Nothing -> error "bruh"
-      Just constructor -> (constructor, rest, 1, [char])
+spanS :: (Char -> Bool) -> LoxScanner (String, (Int, Int))
+spanS predicate = splitS $ span predicate
 
-removeUntilNewline :: String -> String
-removeUntilNewline [] = []
-removeUntilNewline ('\n' : rest) = rest
-removeUntilNewline (_ : rest) = removeUntilNewline rest
+spanSNoEmpty :: (Char -> Bool) -> LoxScanner (String, (Int, Int))
+spanSNoEmpty predicate = splitSNoEmpty $ span predicate
 
-addOneCharToken :: Char -> ScanResult -> Int -> Int -> ScanResult
-addOneCharToken char sr tokenOffset tokenLine =
-  case Map.lookup char table of
-    Nothing -> error "you called this function incorrectly"
-    Just constructor ->
-      addToResult
-        sr
-        $ Right
-        $ MkToken
-          { tokenType = constructor
-          , offset = tokenOffset
-          , literal = None
-          , line = tokenLine
-          , lexeme = [char]
-          }
+splitS :: (String -> (String, String)) -> LoxScanner (String, (Int, Int))
+splitS predicate =
+  LoxScanner $ \inData ->
+    let (string, _) = predicate $ restOfInput inData
+        step oldData [] = oldData
+        step oldData ('\n' : rest) = step (scanNewline oldData) rest
+        step oldData (_ : rest) = step (increment oldData) rest
+        outData = step inData string
+     in Just (outData, (string, lineAndOffset inData))
 
-table :: Map.Map Char TokenType
-table =
+splitSNoEmpty :: (String -> (String, String)) -> LoxScanner (String, (Int, Int))
+splitSNoEmpty predicate =
+  LoxScanner $ \inData ->
+    let (string, _) = predicate $ restOfInput inData
+        step oldData [] = oldData
+        step oldData ('\n' : rest) = step (scanNewline oldData) rest
+        step oldData (_ : rest) = step (increment oldData) rest
+        outData = step inData string
+     in if null string then Nothing else Just (outData, (string, lineAndOffset inData))
+
+createToken ::
+  (String -> TokenType) ->
+  (String -> Literal) ->
+  (String -> String) ->
+  (String, (Int, Int)) ->
+  Either String Token
+createToken toTokenType toLiteral toLexeme (string, (l, o)) =
+  Right $
+    MkToken
+      { tokenType = toTokenType string
+      , offset = o
+      , literal = toLiteral string
+      , line = l
+      , lexeme = toLexeme string
+      }
+
+singleCharTokenTable :: Map.Map Char TokenType
+singleCharTokenTable =
   Map.fromList
     [ ('(', LEFT_PAREN)
     , (')', RIGHT_PAREN)
@@ -308,10 +232,30 @@ table =
     , ('=', EQUAL)
     , ('>', GREATER)
     , ('<', LESS)
+    , ('/', SLASH)
     ]
 
-addToResult :: ScanResult -> Either String Token -> ScanResult
-addToResult (Right (), tokens) (Right token) = (Right (), token : tokens)
-addToResult (Right (), tokens) (Left err) = (Left [err], tokens)
-addToResult (Left errs, tokens) (Left err) = (Left $ err : errs, tokens)
-addToResult (Left errs, tokens) (Right token) = (Left errs, token : tokens)
+twoCharTokenTable :: Map.Map String TokenType
+twoCharTokenTable =
+  Map.fromList [("!=", BANG_EQUAL), ("==", EQUAL_EQUAL), ("<=", LESS_EQUAL), (">=", GREATER_EQUAL)]
+
+identifierTable :: Map.Map String TokenType
+identifierTable =
+  Map.fromList
+    [ ("and", AND)
+    , ("class", CLASS)
+    , ("else", ELSE)
+    , ("false", FALSE)
+    , ("fun", FUN)
+    , ("for", FOR)
+    , ("if", IF)
+    , ("nil", NIL)
+    , ("or", OR)
+    , ("print", PRINT)
+    , ("return", RETURN)
+    , ("super", SUPER)
+    , ("this", THIS)
+    , ("true", TRUE)
+    , ("var", VAR)
+    , ("while", WHILE)
+    ]

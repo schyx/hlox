@@ -33,7 +33,7 @@ instance Show Literal where -- TODO: change literal to not include identifiers
 data Token = MkToken
   { tokenType :: TokenType
   , lexeme :: String
-  , literal :: Literal
+  , literal :: Literal -- TODO: make this Maybe Literal (and get rid of None)
   , line :: Int
   , offset :: Int
   }
