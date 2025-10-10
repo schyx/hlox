@@ -61,4 +61,3 @@ tests:
     - -with-rtsopts=-N
     dependencies:
     - hlox
-    - HUnit
