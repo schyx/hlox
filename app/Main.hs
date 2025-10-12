@@ -40,17 +40,16 @@ runPrompt = go defaultInterpreter
       Left _ -> do
         let (errs, tokens) = scanTokens input
         if null errs
-          then case expression tokens [] of
-            Left (err, _) -> do
+          then case expressionWrapper tokens of
+            Left err -> do
               toStderr err
               go env
-            Right (expr, [_eof], _) -> do
+            Right expr -> do
               exprOutput <- runExceptT $ runExceptT $ interpretExpr env expr
               case exprOutput of
                 Left err -> toStderr [err] >> go env
                 Right (Left _) -> error "got return value?"
                 Right (Right (lit, _)) -> print lit >> go env
-            Right (_, _, _) -> toStderr ["Too many tokens."] >> go env
           else do
             toStderr errs
             go env

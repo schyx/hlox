@@ -20,3 +20,10 @@ instance Alternative (Parser dat) where
   empty = Parser $ const Nothing
   (Parser p1) <|> (Parser p2) =
     Parser $ \inData -> p1 inData <|> p2 inData
+
+instance Monad (Parser dat) where
+  return = pure
+  (Parser p) >>= f = Parser $ \inData ->
+    case p inData of
+      Nothing -> Nothing
+      Just (midData, firstVal) -> runParser (f firstVal) midData
