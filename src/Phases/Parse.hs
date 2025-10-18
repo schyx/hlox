@@ -318,7 +318,8 @@ unary = (Unary <$> match (`elem` [MINUS, BANG]) <*> unary) <||> call
 
 call :: MaybeT Planter Expr
 call = callExpr <||> primary
- where -- TODO: refactor this maybe?
+ where
+  -- TODO: refactor this maybe?
   callExpr = do
     callee <- primary
     leftParen <- match (== LEFT_PAREN)

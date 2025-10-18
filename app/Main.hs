@@ -1,8 +1,8 @@
 module Main (main) where
 
 import Control.Monad.Except (runExceptT)
-import Phases.Interpreter
 import Phases.Interpret
+import Phases.Interpreter
 import Phases.Parse
 import Phases.Scanner
 import Phases.Stmt
@@ -53,21 +53,6 @@ runPrompt = go defaultInterpreter
           else do
             toStderr errs
             go env
-        -- case scanResult of
-        --   (Left errs, _) -> do
-        --     toStderr errs
-        --     go env
-        --   (Right _, tokens) -> case expression tokens [] of
-        --     Left (err, _) -> do
-        --       toStderr err
-        --       go env
-        --     Right (expr, [_eof], _) -> do
-        --       exprOutput <- runExceptT $ runExceptT $ interpretExpr env expr
-        --       case exprOutput of
-        --         Left err -> toStderr [err] >> go env
-        --         Right (Left _) -> error "got return value?"
-        --         Right (Right (lit, _)) -> print lit >> go env
-        --     Right (_, _, _) -> toStderr ["Too many tokens."] >> go env
 
 -- | Runs a Lox file
 runFile :: String -> IO ()
