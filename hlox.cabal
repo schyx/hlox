@@ -32,6 +32,7 @@ library
       Phases.Interpret
       Phases.Interpreter
       Phases.Parse
+      Phases.Resolver
       Phases.Scanner
       Phases.Stmt
       Tokens

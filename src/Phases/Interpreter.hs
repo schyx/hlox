@@ -7,6 +7,7 @@ module Phases.Interpreter (
   changeToParent,
   define,
   assign,
+  lookupVariable,
   get,
   restoreRunningEnv,
   Value (..),
@@ -15,12 +16,15 @@ module Phases.Interpreter (
 import Control.Monad.Except (ExceptT (..))
 import Control.Monad.IO.Class (MonadIO (liftIO))
 import qualified Data.Map as Map
+import Data.Maybe (fromMaybe)
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import Error (runtimeError)
 import Numeric (showFFloat)
+import Phases.Expr (Expr (..))
+import Phases.Resolver (Locals (resolverMap))
 import Tokens
 
-data Interpreter = Interpreter (Map.Map EnvID Environment) EnvID EnvID
+data Interpreter = Interpreter (Map.Map EnvID Environment) (Map.Map Expr Int) EnvID EnvID
   deriving (Show)
 
 data Environment = Environment (Map.Map String Value) (Maybe EnvID)
@@ -32,8 +36,8 @@ newtype EnvID = EnvID Int
 nextLargest :: EnvID -> EnvID
 nextLargest (EnvID envId) = EnvID $ envId + 1
 
-defaultInterpreter :: Interpreter
-defaultInterpreter =
+defaultInterpreter :: Locals -> Interpreter
+defaultInterpreter locals =
   let clockToken =
         MkToken
           { tokenType = IDENTIFIER
@@ -47,74 +51,103 @@ defaultInterpreter =
         return (VNumber (realToFrac time :: Double), interp)
       clock = VFunction [] clockToken "<native fn>" clockFunc
       globalEnv = Environment (Map.fromList [("clock", clock)]) Nothing
-      baseEnv = Environment Map.empty (Just $ EnvID 0)
-      table = Map.fromList [(EnvID 0, globalEnv), (EnvID 1, baseEnv)]
-   in Interpreter table (EnvID 1) (EnvID 1)
+      table = Map.fromList [(EnvID 0, globalEnv)]
+   in Interpreter table (resolverMap locals) (EnvID 0) (EnvID 0)
 
 createChildEnv :: Interpreter -> Interpreter
-createChildEnv (Interpreter table current largestId) =
+createChildEnv (Interpreter table locals current largestId) =
   case table Map.!? current of
     Just _ ->
       let outputId = nextLargest largestId
           emptyEnv = Environment Map.empty $ Just current
           newTable = Map.insert outputId emptyEnv table
-          outputInterpreter = Interpreter newTable outputId outputId
+          outputInterpreter = Interpreter newTable locals outputId outputId
        in outputInterpreter
     Nothing -> error "parentId doesn't exist in Map"
 
 changeToParent :: Interpreter -> Interpreter
-changeToParent (Interpreter table current largestId) =
+changeToParent (Interpreter table locals current largestId) =
   case table Map.!? current of
     Just (Environment _ parent) ->
       case parent of
-        Just pEnv -> Interpreter table pEnv largestId
+        Just pEnv -> Interpreter table locals pEnv largestId
         Nothing -> error "can't change to parent when no parent"
     Nothing -> error "parentId doesn't exist in Map"
 
 define :: Interpreter -> Token -> Value -> Interpreter
-define (Interpreter table current largestId) token value =
+define (Interpreter table locals current largestId) token value =
   case table Map.!? current of
     Just (Environment envTable parent) ->
       let envTable' = Map.insert (lexeme token) value envTable
           env' = Environment envTable' parent
           table' = Map.insert current env' table
-       in Interpreter table' current largestId
+       in Interpreter table' locals current largestId
     Nothing -> error "can't define in impossible env"
 
-assign :: Interpreter -> Token -> Value -> Either String Interpreter
-assign (Interpreter table current largestId) token value =
-  case table Map.!? current of
-    Just (Environment envTable parent)
-      | Map.member (lexeme token) envTable ->
-          let envTable' = Map.insert (lexeme token) value envTable
-              env' = Environment envTable' parent
-              table' = Map.insert current env' table
-              interp' = Interpreter table' current largestId
-           in Right interp'
-      | Just pEnv <- parent -> do
-          (Interpreter table' _ _) <- assign (Interpreter table pEnv largestId) token value
-          return $ Interpreter table' current largestId
-      | Nothing <- parent ->
-          Left $ runtimeError token $ "Undefined variable '" ++ lexeme token ++ "'."
-    Nothing -> error "Can't assign in impossible env"
+assign :: Interpreter -> Expr -> Value -> Either String Interpreter
+assign interp@(Interpreter _ locals _ _) expr@(Assign name _) value =
+  case locals Map.!? expr of
+    Nothing -> assignGlobal interp name value
+    Just distance -> assignAt interp distance name value
+assign _ _ _ = error ""
+
+assignAt :: Interpreter -> Int -> Token -> Value -> Either String Interpreter
+assignAt interp@(Interpreter table locals current largestId) distance name val =
+  let ancestorId = ancestor distance interp current
+      Environment envTable parent = fromMaybe (error "in assignAt") (table Map.!? ancestorId)
+      newTable = Map.insert ancestorId (Environment (Map.insert (lexeme name) val envTable) parent) table
+   in Right $ Interpreter newTable locals current largestId
+
+assignGlobal :: Interpreter -> Token -> Value -> Either String Interpreter
+assignGlobal (Interpreter table locals current largestId) token value =
+  let Environment globalTable pEnv = table Map.! EnvID 0
+      newGlobalEnv = Environment (Map.insert (lexeme token) value globalTable) pEnv
+   in case globalTable Map.!? lexeme token of
+        Just _ -> Right $ Interpreter (Map.insert (EnvID 0) newGlobalEnv table) locals current largestId
+        Nothing -> Left $ runtimeError token $ "Undefined variable '" ++ lexeme token ++ "'."
+
+lookupVariable :: Interpreter -> Token -> Expr -> Either String Value
+lookupVariable interp@(Interpreter table locals _ _) name expr =
+  case locals Map.!? expr of
+    Nothing ->
+      let Environment envTable _ = table Map.! EnvID 0
+       in case envTable Map.!? lexeme name of
+            Nothing -> Left (runtimeError name $ "Undefined variable '" ++ lexeme name ++ "'.")
+            Just val -> Right val
+    Just distance -> getAt interp distance name
+
+getAt :: Interpreter -> Int -> Token -> Either String Value
+getAt interp@(Interpreter table _ current _) distance name =
+  let Environment envTable _ = fromMaybe (error "in getAt") (table Map.!? ancestor distance interp current)
+   in case envTable Map.!? lexeme name of
+        Nothing -> error $ "getting " ++ lexeme name ++ " at line " ++ show (line name) ++ " from envTable, distance is " ++ show distance ++ ", current is " ++ show current ++ "\n\n     interp is " ++ show interp
+        Just val -> Right val
 
 get :: Interpreter -> Token -> Either String Value
-get (Interpreter table current largestId) token =
+get (Interpreter table locals current largestId) token =
   case table Map.!? current of
     Just (Environment envTable parent) ->
       case envTable Map.!? lexeme token of
         Just val -> Right val
         Nothing ->
           case parent of
-            Just pEnv -> get (Interpreter table pEnv largestId) token
+            Just pEnv -> get (Interpreter table locals pEnv largestId) token
             Nothing -> Left $ runtimeError token ("Undefined variable '" ++ lexeme token ++ "'.")
     Nothing -> error "Can't get from impossible nev"
 
+ancestor :: Int -> Interpreter -> EnvID -> EnvID
+ancestor distance interp@(Interpreter table _ _ _) childId
+  | distance == 0 = childId
+  | otherwise = ancestor (distance - 1) interp $
+      case table Map.!? childId of
+        Just (Environment _ parent) -> fromMaybe undefined parent
+        Nothing -> error "in ancestor"
+
 restoreRunningEnv :: Interpreter -> Interpreter -> Interpreter
-restoreRunningEnv (Interpreter _ env _) = setRunningEnv env
+restoreRunningEnv (Interpreter _ _ env _) = setRunningEnv env
 
 setRunningEnv :: EnvID -> Interpreter -> Interpreter
-setRunningEnv envId (Interpreter table _ largest) = Interpreter table envId largest
+setRunningEnv envId (Interpreter table locals _ largest) = Interpreter table locals envId largest
 
 data Value
   = VNumber Double

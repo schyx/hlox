@@ -82,9 +82,9 @@ interpretExpr interp (Call callee paren argExprs) = do
     (val, interp') <- interpretExpr argsInterp expr
     (params, afterParamsInterp) <- interpretExprs interp' exprs
     return (val : params, afterParamsInterp)
-interpretExpr interp (Assign name expr) = do
-  (val, interp') <- interpretExpr interp expr
-  case assign interp' name val of
+interpretExpr interp expr@(Assign _ value) = do
+  (val, interp') <- interpretExpr interp value
+  case assign interp' expr val of
     Right assignedInterp -> return (val, assignedInterp)
     Left err -> lift $ throwError err
 interpretExpr interp (Binary left operator right) = do
@@ -140,8 +140,8 @@ interpretExpr interp (Unary operator expr) = do
       Left err -> lift $ throwError err
     _ -> error "unexpected opType when interpreting unary"
 interpretExpr interp (Grouping expr) = interpretExpr interp expr
-interpretExpr interp (Variable tok) =
-  case get interp tok of
+interpretExpr interp expr@(Variable tok) =
+  case lookupVariable interp tok expr of
     Right val -> return (val, interp)
     Left err -> lift $ throwError err
 interpretExpr interp (AndExpr left _ right) = do

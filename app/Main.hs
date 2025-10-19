@@ -1,9 +1,11 @@
 module Main (main) where
 
 import Control.Monad.Except (runExceptT)
+import qualified Data.Map as Map
 import Phases.Interpret
 import Phases.Interpreter
 import Phases.Parse
+import Phases.Resolver
 import Phases.Scanner
 import Phases.Stmt
 import System.Environment
@@ -28,7 +30,7 @@ checkArgs _ = do
 
 -- | Creates Lox repl
 runPrompt :: IO () -- deal with environment persisting
-runPrompt = go defaultInterpreter
+runPrompt = go (defaultInterpreter $ Locals Map.empty)
  where
   go env = do
     putStr "> "
@@ -58,15 +60,39 @@ runPrompt = go defaultInterpreter
 runFile :: String -> IO ()
 runFile filepath = do
   contents <- readFile filepath
-  errOrEnv <- runStatements defaultInterpreter contents
-  case errOrEnv of
-    Right _ -> return ()
-    Left (ScanOrParseErr errs) -> do
-      toStderr errs
-      exitWith $ ExitFailure 65
-    Left (RuntimeErr err) -> do
-      toStderr [err]
-      exitWith $ ExitFailure 70
+  let (scanErrs, tokens) = scanTokens contents
+  if null scanErrs
+    then case parse tokens of
+      Right stmts -> do
+        case resolve stmts of
+          Left resolverErrs -> do
+            toStderr resolverErrs
+            exitWith $ ExitFailure 65
+          Right locals -> do
+            errOrEnv <- go (defaultInterpreter locals) stmts
+            case errOrEnv of
+              Right _ -> return ()
+              Left err -> do
+                -- toStderr [err]
+                exitWith $ ExitFailure 70
+      Left parseErrs -> do
+        toStderr $ scanErrs ++ parseErrs
+        exitWith $ ExitFailure 65
+    else case parse tokens of
+      Right _ -> do
+        toStderr scanErrs
+        exitWith $ ExitFailure 65
+      Left parseErrs -> do
+        toStderr $ scanErrs ++ parseErrs
+        exitWith $ ExitFailure 65
+ where
+  go :: Interpreter -> [Stmt] -> IO (Either String Interpreter)
+  go e (s : rest) = do
+    newEnvOrErr <- runInterp e s
+    case newEnvOrErr of
+      Left err -> return $ Left err
+      Right newEnv -> go newEnv rest
+  go e [] = return $ Right e
 
 runStatements :: Interpreter -> String -> IO (Either Errs Interpreter)
 runStatements env contents = do

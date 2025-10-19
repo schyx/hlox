@@ -1,4 +1,4 @@
-module Error (parseError, runtimeError, report) where
+module Error (parseError, resolveError, runtimeError, report) where
 
 import Text.Printf
 import Tokens
@@ -7,6 +7,9 @@ parseError :: Token -> String -> String
 parseError token message
   | tokenType token == EOF = report (line token) " at end" message
   | otherwise = report (line token) (" at '" ++ lexeme token ++ "'") message
+
+resolveError :: Token -> String -> String
+resolveError = parseError
 
 runtimeError :: Token -> String -> String
 runtimeError badToken message = printf "%s\n[line %d]" message $ line badToken
