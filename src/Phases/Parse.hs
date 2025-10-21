@@ -173,7 +173,7 @@ varDeclaration = do
 
 statement :: MaybeT Planter SomeStmt
 statement =
-  (SomeStmt <$> forStatement)
+  forStatement
     <||> (SomeStmt <$> ifStatement)
     <||> (SomeStmt <$> printStatement)
     <||> (SomeStmt <$> returnStatement)
@@ -181,7 +181,7 @@ statement =
     <||> (SomeStmt <$> blockStatement)
     <||> (SomeStmt <$> expressionStatement)
 
-forStatement :: MaybeT Planter (Stmt KWhile)
+forStatement :: MaybeT Planter SomeStmt
 forStatement = do
   _ <- match (== FOR)
   _ <- consume LEFT_PAREN "Expect '(' after for."
@@ -209,8 +209,8 @@ forStatement = do
         newStmt =
           let while = While newCondition newBody
            in case initializer of
-                Nothing -> while
-                Just initial -> Block [initial, SomeStmt while]
+                Nothing -> SomeStmt while
+                Just initial -> SomeStmt $ Block [initial, SomeStmt while]
      in newStmt
 
 ifStatement :: MaybeT Planter (Stmt KIf)

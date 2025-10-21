@@ -1,3 +1,5 @@
+{-# LANGUAGE GADTs #-}
+
 module Phases.Interpret (interpret, InterpretOutput, interpretExpr) where
 
 import Control.Monad (foldM)

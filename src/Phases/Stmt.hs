@@ -21,13 +21,13 @@ data StmtKind
 data SomeStmt where
   SomeStmt :: Stmt k -> SomeStmt
 
-data Stmt (k :: StmtKind)
-  = Expression Expr
-  | Print Expr
-  | Var Token Expr
-  | Block [SomeStmt]
-  | If Expr SomeStmt (Maybe SomeStmt)
-  | While Expr SomeStmt
-  | Function Token [Token] [SomeStmt]
-  | Return Token Expr
-  | Class Token [Stmt 'KFunction]
+data Stmt (k :: StmtKind) where
+  Expression :: Expr -> Stmt 'KExpression
+  Print :: Expr -> Stmt 'KPrint
+  Var :: Token -> Expr -> Stmt 'KVar
+  Block :: [SomeStmt] -> Stmt 'KBlock
+  If :: Expr -> SomeStmt -> Maybe SomeStmt -> Stmt 'KIf
+  While :: Expr -> SomeStmt -> Stmt 'KWhile
+  Function :: Token -> [Token] -> [SomeStmt] -> Stmt 'KFunction
+  Return :: Token -> Expr -> Stmt 'KReturn
+  Class :: Token -> [Stmt 'KFunction] -> Stmt 'KClass
