@@ -85,7 +85,7 @@ runFile filepath = do
         toStderr $ scanErrs ++ parseErrs
         exitWith $ ExitFailure 65
  where
-  go :: Interpreter -> [Stmt] -> IO (Either String Interpreter)
+  go :: Interpreter -> [SomeStmt] -> IO (Either String Interpreter)
   go e (s : rest) = do
     newEnvOrErr <- runInterp e s
     case newEnvOrErr of
@@ -110,7 +110,7 @@ runStatements env contents = do
         Right _ -> return $ Left $ ScanOrParseErr errs
         Left parseErrs -> return $ Left $ ScanOrParseErr $ errs ++ parseErrs
  where
-  go :: Interpreter -> [Stmt] -> IO (Either String Interpreter)
+  go :: Interpreter -> [SomeStmt] -> IO (Either String Interpreter)
   go e (s : rest) = do
     newEnvOrErr <- runInterp e s
     case newEnvOrErr of
@@ -124,7 +124,7 @@ toStderr (err : errs) = do
   hPutStrLn stderr err
   toStderr errs
 
-runInterp :: Interpreter -> Stmt -> IO (Either String Interpreter)
+runInterp :: Interpreter -> SomeStmt -> IO (Either String Interpreter)
 runInterp env s = do
   interpOutput <- runExceptT $ runExceptT $ interpret env s
   case interpOutput of

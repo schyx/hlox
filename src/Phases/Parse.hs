@@ -1,3 +1,4 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE TupleSections #-}
 
 module Phases.Parse (parse, TreeResult, expressionWrapper) where
@@ -12,7 +13,7 @@ import Phases.Expr
 import Phases.Stmt
 import Tokens
 
-type TreeResult = Either [String] [Stmt]
+type TreeResult = Either [String] [SomeStmt]
 
 type Planter = Parser ([String], [Token])
 
@@ -35,7 +36,7 @@ parse input =
       )
         $ runPlanter (many planter) start
 
-planter :: Planter (Maybe Stmt)
+planter :: Planter (Maybe SomeStmt)
 planter = do
   maybeStmt <- runMaybeT declaration
   when (isNothing maybeStmt) synchronize
@@ -101,21 +102,37 @@ expressionWrapper =
     . runPlanter (fromMaybe undefined <$> runMaybeT expression)
     . ([],)
 
-declaration :: MaybeT Planter Stmt
+declaration :: MaybeT Planter SomeStmt
 declaration =
-  varDeclaration
+  classDeclaration
     <||> functionDeclaration
+    <||> varDeclaration
     <||> statement
 
-functionDeclaration :: MaybeT Planter Stmt
+classDeclaration :: MaybeT Planter SomeStmt
+classDeclaration = do
+  _ <- match (== CLASS)
+  className <- consume IDENTIFIER "Expect class name."
+  _ <- consume LEFT_BRACE "Expect '{' before class body."
+  methods <- parseMethods
+  _ <- consume RIGHT_BRACE "Expect '}' after class body."
+  return $ SomeStmt $ Class className methods
+ where
+  parseMethods = many (createCallable "method")
+
+functionDeclaration :: MaybeT Planter SomeStmt
 functionDeclaration = do
   _ <- match (== FUN)
-  funcName <- consume IDENTIFIER "Expect function name."
-  _ <- consume LEFT_PAREN "Expect '(' after function name."
+  SomeStmt <$> createCallable "function"
+
+createCallable :: String -> MaybeT Planter (Stmt KFunction)
+createCallable callableType = do
+  name <- consume IDENTIFIER $ "Expect " ++ callableType ++ " name."
+  _ <- consume LEFT_PAREN $ "Expect '(' after " ++ callableType ++ " name."
   params <- getParams
-  _ <- consume LEFT_BRACE "Expect '{' before function body."
+  _ <- consume LEFT_BRACE $ "Expect '{' before " ++ callableType ++ " body."
   body <- buildBlock []
-  return $ Function funcName params body
+  return $ Function name params body
  where
   getParams = addParam [] <||> endParamList []
   addParam buildup = do
@@ -131,7 +148,7 @@ functionDeclaration = do
     _ <- consume RIGHT_PAREN "Expect ')' after parameters."
     return $ reverse buildup
 
-varDeclaration :: MaybeT Planter Stmt
+varDeclaration :: MaybeT Planter SomeStmt
 varDeclaration = do
   _ <- match (== VAR)
   varName <- consume IDENTIFIER "Expect variable name."
@@ -143,10 +160,10 @@ varDeclaration = do
     _ <- match (== EQUAL)
     expr <- expression
     _ <- consume SEMICOLON "Expect ';' after variable declaration."
-    return $ Var varName expr
+    return $ SomeStmt $ Var varName expr
   noVal varName = do
     _ <- match (== SEMICOLON)
-    return $ Var varName $ Primary Nil
+    return $ SomeStmt $ Var varName $ Primary Nil
   unexpectedToken =
     ( parseError
         <$> match (const True)
@@ -154,7 +171,7 @@ varDeclaration = do
     )
       >>= addParseError
 
-statement :: MaybeT Planter Stmt
+statement :: MaybeT Planter SomeStmt
 statement =
   forStatement
     <||> ifStatement
@@ -164,7 +181,7 @@ statement =
     <||> blockStatement
     <||> expressionStatement
 
-forStatement :: MaybeT Planter Stmt
+forStatement :: MaybeT Planter SomeStmt
 forStatement = do
   _ <- match (== FOR)
   _ <- consume LEFT_PAREN "Expect '(' after for."
@@ -185,62 +202,62 @@ forStatement = do
   desugarToWhile initializer condition increment body =
     let newBody = case increment of
           Nothing -> body
-          Just inc -> Block [body, Expression inc]
+          Just inc -> SomeStmt . Block $ [body, SomeStmt $ Expression inc]
         newCondition = case condition of
           Nothing -> Primary $ Boolean True
           Just cond -> cond
         newStmt =
-          let while = While newCondition newBody
+          let while = SomeStmt $ While newCondition newBody
            in case initializer of
                 Nothing -> while
-                Just initial -> Block [initial, while]
+                Just initial -> SomeStmt $ Block [initial, while]
      in newStmt
 
-ifStatement :: MaybeT Planter Stmt
+ifStatement :: MaybeT Planter SomeStmt
 ifStatement = do
   _ <- match (== IF)
   _ <- consume LEFT_PAREN "Expect '(' after 'if'."
   expr <- expression
   _ <- consume RIGHT_PAREN "Expect ')' after if condition."
   ifBranch <- statement
-  If expr ifBranch <$> getElseBranch
+  SomeStmt . If expr ifBranch <$> getElseBranch
  where
   getElseBranch = (match (== ELSE) >> (Just <$> statement)) <||> pure Nothing
 
-printStatement :: MaybeT Planter Stmt
+printStatement :: MaybeT Planter SomeStmt
 printStatement = do
   _ <- match (== PRINT)
   expr <- expression
   _ <- consume SEMICOLON "Expect ';' after expression."
-  return $ Print expr
+  return $ SomeStmt $ Print expr
 
-returnStatement :: MaybeT Planter Stmt
+returnStatement :: MaybeT Planter SomeStmt
 returnStatement = do
   returnToken <- match (== RETURN)
   emptyReturn returnToken <||> hasExprReturn returnToken
  where
   emptyReturn returnToken = do
     _ <- match (== SEMICOLON)
-    return (Return returnToken $ Primary Nil)
+    return $ SomeStmt $ Return returnToken $ Primary Nil
   hasExprReturn returnToken = do
     expr <- expression
     _ <- consume SEMICOLON "Expect ';' after return value."
-    return $ Return returnToken expr
+    return $ SomeStmt $ Return returnToken expr
 
-whileStatement :: MaybeT Planter Stmt
+whileStatement :: MaybeT Planter SomeStmt
 whileStatement = do
   _ <- match (== WHILE)
   _ <- consume LEFT_PAREN "Expect '(' after while."
   expr <- expression
   _ <- consume RIGHT_PAREN "Expect ')' after condition."
-  While expr <$> statement
+  SomeStmt . While expr <$> statement
 
-blockStatement :: MaybeT Planter Stmt
+blockStatement :: MaybeT Planter SomeStmt
 blockStatement = do
   _ <- match (== LEFT_BRACE)
-  Block <$> buildBlock []
+  SomeStmt . Block <$> buildBlock []
 
-buildBlock :: [Stmt] -> MaybeT Planter [Stmt]
+buildBlock :: [SomeStmt] -> MaybeT Planter [SomeStmt]
 buildBlock buildup = rightBrace <||> endOfFile <||> moreStmts
  where
   rightBrace = match (== RIGHT_BRACE) >> return (reverse buildup)
@@ -251,12 +268,12 @@ buildBlock buildup = rightBrace <||> endOfFile <||> moreStmts
     stmt <- declaration
     buildBlock $ stmt : buildup
 
-expressionStatement :: MaybeT Planter Stmt
+expressionStatement :: MaybeT Planter SomeStmt
 expressionStatement = do
   _ <- check (/= EOF)
   expr <- expression
   _ <- consume SEMICOLON "Expect ';' after expression."
-  return $ Expression expr
+  return $ SomeStmt $ Expression expr
 
 expression :: MaybeT Planter Expr
 expression = assignment

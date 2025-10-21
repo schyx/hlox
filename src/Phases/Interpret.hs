@@ -13,35 +13,35 @@ import Tokens
 
 type InterpretOutput a = ExceptT (Value, Interpreter) (ExceptT String IO) a
 
-interpret :: Interpreter -> Stmt -> InterpretOutput Interpreter
-interpret interp (Print expr) = do
+interpret :: Interpreter -> SomeStmt -> InterpretOutput Interpreter
+interpret interp (SomeStmt (Print expr)) = do
   (val, interp') <- interpretExpr interp expr
   liftIO $ print val
   return interp'
-interpret interp (Expression expr) = do
+interpret interp (SomeStmt (Expression expr)) = do
   (_, interp') <- interpretExpr interp expr
   return interp'
-interpret interp (Var name initializer) = do
+interpret interp (SomeStmt (Var name initializer)) = do
   (val, interp') <- interpretExpr interp initializer
   return $ define interp' name val
-interpret interp (Block stmts) = do
+interpret interp (SomeStmt (Block stmts)) = do
   let interp' = createChildEnv interp
   interp'' <- execBlock interp' stmts
   return $ changeToParent interp''
-interpret interp (If condition ifBranch (Just elseBranch)) = do
+interpret interp (SomeStmt (If condition ifBranch (Just elseBranch))) = do
   (val, interp') <- interpretExpr interp condition
   interpret interp' (if isTruthy val then ifBranch else elseBranch)
-interpret interp (If condition ifBranch Nothing) = do
+interpret interp (SomeStmt (If condition ifBranch Nothing)) = do
   (val, interp') <- interpretExpr interp condition
   if isTruthy val then interpret interp' ifBranch else return interp'
-interpret interp (While condition whileBlock) = do
+interpret interp (SomeStmt (While condition whileBlock)) = do
   (val, interp') <- interpretExpr interp condition
   if isTruthy val
     then do
       interp'' <- interpret interp' whileBlock
-      interpret interp'' (While condition whileBlock)
+      interpret interp'' (SomeStmt (While condition whileBlock))
     else return interp'
-interpret interp (Function fname params body) = do
+interpret interp (SomeStmt (Function fname params body)) = do
   let functionF interpreter args = do
         let enclosingInterp = restoreRunningEnv interp interpreter
         let fInterpInitial = createChildEnv enclosingInterp
@@ -52,11 +52,12 @@ interpret interp (Function fname params body) = do
           Right outputInterp -> ExceptT $ return $ Right (VNil, outputInterp)
   let functionVal = VFunction params fname ("<fn " ++ lexeme fname ++ ">") functionF
   return $ define interp fname functionVal
-interpret interp (Return _ expr) = do
+interpret interp (SomeStmt (Return _ expr)) = do
   (val, interp') <- interpretExpr interp expr
   throwError (val, interp')
+interpret _ (SomeStmt (Class _ _)) = undefined
 
-execBlock :: Interpreter -> [Stmt] -> InterpretOutput Interpreter
+execBlock :: Interpreter -> [SomeStmt] -> InterpretOutput Interpreter
 execBlock = foldM interpret
 
 interpretExpr :: Interpreter -> Expr -> InterpretOutput (Value, Interpreter)

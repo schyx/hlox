@@ -3,7 +3,7 @@ module Phases.Resolver (resolve, Locals (..)) where
 import qualified Data.Map as Map
 import Error (resolveError)
 import Phases.Expr (Expr (..))
-import Phases.Stmt (Stmt (..))
+import Phases.Stmt (Stmt (..), SomeStmt (SomeStmt))
 import Tokens (Token (lexeme))
 
 newtype Locals = Locals {resolverMap :: Map.Map Expr Int}
@@ -48,7 +48,7 @@ define varName rt = case scopes rt of
   [] -> rt
   scope : rest -> rt{scopes = Map.insert (lexeme varName) True scope : rest}
 
-resolve :: [Stmt] -> Either [String] Locals
+resolve :: [SomeStmt] -> Either [String] Locals
 resolve inputStmts =
   let emptyResolverType =
         ResolverType
@@ -84,37 +84,38 @@ resolveLocal expr name rt = resolveName expr depth rt
       Nothing -> depthHelper (currentDepth + 1) rest
 
 -- TODO: refactor to be in alphabetical order
-resolveStmt :: Stmt -> ResolverType -> ResolverType
-resolveStmt (Expression expr) = resolveExpr expr
-resolveStmt (Print expr) = resolveExpr expr
-resolveStmt (Var varName varVal) =
+resolveStmt :: SomeStmt -> ResolverType -> ResolverType
+resolveStmt (SomeStmt (Expression expr)) = resolveExpr expr
+resolveStmt (SomeStmt (Print expr)) = resolveExpr expr
+resolveStmt (SomeStmt (Var varName varVal)) =
   define varName
     . resolveExpr varVal
     . declare varName
-resolveStmt (Block blockStmts) =
+resolveStmt (SomeStmt (Block blockStmts)) =
   endScope
     . (\rt -> foldl (flip resolveStmt) rt blockStmts)
     . beginScope
-resolveStmt (If condition thenBranch maybeElseBranch) =
+resolveStmt (SomeStmt (If condition thenBranch maybeElseBranch)) =
   maybe id resolveStmt maybeElseBranch
     . resolveStmt thenBranch
     . resolveExpr condition
-resolveStmt (While condition body) =
+resolveStmt (SomeStmt (While condition body)) =
   resolveStmt body
     . resolveExpr condition
-resolveStmt stmt@(Function name _ _) =
+resolveStmt stmt@(SomeStmt (Function name _ _)) =
   resolveFunction stmt FUNCTION
     . define name
     . declare name
-resolveStmt (Return keyword value) = resolveExpr value . checkFunctionType
+resolveStmt (SomeStmt (Return keyword value)) = resolveExpr value . checkFunctionType
  where
   checkFunctionType rt =
     if currentFunction rt == NONE
       then addError keyword "Can't return from top-level code." rt
       else rt
+resolveStmt (SomeStmt (Class _ _)) = undefined
 
-resolveFunction :: Stmt -> FunctionType -> ResolverType -> ResolverType
-resolveFunction (Function _ params body) ftype resolverType =
+resolveFunction :: SomeStmt -> FunctionType -> ResolverType -> ResolverType
+resolveFunction (SomeStmt (Function _ params body)) ftype resolverType =
   ( endScope
       . (\rt -> foldl (flip resolveStmt) rt body) -- resolve body
       . (\rt -> foldl (flip $ \tok -> define tok . declare tok) rt params) -- resolve params
