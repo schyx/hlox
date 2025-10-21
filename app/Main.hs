@@ -72,8 +72,7 @@ runFile filepath = do
             errOrEnv <- go (defaultInterpreter locals) stmts
             case errOrEnv of
               Right _ -> return ()
-              Left err -> do
-                -- toStderr [err]
+              Left _ -> do
                 exitWith $ ExitFailure 70
       Left parseErrs -> do
         toStderr $ scanErrs ++ parseErrs
