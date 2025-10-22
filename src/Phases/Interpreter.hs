@@ -7,6 +7,7 @@ module Phases.Interpreter (
   changeToParent,
   define,
   assign,
+  assignTok,
   lookupVariable,
   get,
   restoreRunningEnv,
@@ -84,6 +85,23 @@ define (Interpreter table locals current largestId) token value =
        in Interpreter table' locals current largestId
     Nothing -> error "can't define in impossible env"
 
+assignTok :: Interpreter -> Token -> Value -> Either String Interpreter
+assignTok (Interpreter table locals current largestId) token value =
+  case table Map.!? current of
+    Just (Environment envTable parent)
+      | Map.member (lexeme token) envTable ->
+          let envTable' = Map.insert (lexeme token) value envTable
+              env' = Environment envTable' parent
+              table' = Map.insert current env' table
+              interp' = Interpreter table' locals current largestId
+           in Right interp'
+      | Just pEnv <- parent -> do
+          (Interpreter table' _ _ _) <- assignTok (Interpreter table locals pEnv largestId) token value
+          return $ Interpreter table' locals current largestId
+      | Nothing <- parent ->
+          Left $ runtimeError token $ "Undefined variable '" ++ lexeme token ++ "'."
+    Nothing -> error "Can't assign in impossible env"
+
 assign :: Interpreter -> Expr -> Value -> Either String Interpreter
 assign interp@(Interpreter _ locals _ _) expr@(Assign name _) value =
   case locals Map.!? expr of
@@ -156,6 +174,7 @@ data Value
   | VNil
   | VCall Int Token String
   | VFunction [Token] Token String (Interpreter -> [Value] -> ExceptT String IO (Value, Interpreter))
+  | VClass String
 
 instance Eq Value where
   (VNumber n1) == (VNumber n2) = n1 == n2
@@ -165,6 +184,7 @@ instance Eq Value where
   (VCall arity1 tok1 name1) == (VCall arity2 tok2 name2) = arity1 == arity2 && tok1 == tok2 && name1 == name2
   (VFunction params1 callee1 name1 _) == (VFunction params2 callee2 name2 _) =
     params1 == params2 && callee1 == callee2 && name1 == name2
+  (VClass name1) == (VClass name2) = name1 == name2
   _ == _ = False
 
 instance Ord Value where
@@ -188,10 +208,15 @@ instance Ord Value where
   compare (VCall arity1 tok1 name1) (VCall arity2 tok2 name2) = compare (arity1, tok1, name1) (arity2, tok2, name2)
   compare VCall{} other = case other of
     VFunction{} -> LT
+    VClass{} -> LT
     _ -> GT
   compare (VFunction params1 callee1 name1 _) (VFunction params2 callee2 name2 _) =
     compare (params1, callee1, name1) (params2, callee2, name2)
-  compare VFunction{} _ = GT
+  compare VFunction{} other = case other of
+    VClass{} -> LT
+    _ -> GT
+  compare (VClass name1) (VClass name2) = compare name1 name2
+  compare VClass{} _ = GT
 
 instance Show Value where -- TODO: change literal to not include identifiers
   show (VNumber n) = formatNumber n
@@ -206,6 +231,7 @@ instance Show Value where -- TODO: change literal to not include identifiers
   show VNil = "nil"
   show (VFunction _ _ s _) = s
   show (VCall _ _ s) = s
+  show (VClass name) = name
 
 fromLiteral :: Literal -> Value
 fromLiteral (Tokens.Number n) = VNumber n

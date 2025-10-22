@@ -1,9 +1,11 @@
+{-# LANGUAGE GADTs #-}
+
 module Phases.Resolver (resolve, Locals (..)) where
 
 import qualified Data.Map as Map
 import Error (resolveError)
 import Phases.Expr (Expr (..))
-import Phases.Stmt (Stmt (..), SomeStmt (SomeStmt))
+import Phases.Stmt (SomeStmt (SomeStmt), Stmt (..))
 import Tokens (Token (lexeme))
 
 newtype Locals = Locals {resolverMap :: Map.Map Expr Int}
@@ -112,7 +114,7 @@ resolveStmt (SomeStmt (Return keyword value)) = resolveExpr value . checkFunctio
     if currentFunction rt == NONE
       then addError keyword "Can't return from top-level code." rt
       else rt
-resolveStmt (SomeStmt (Class _ _)) = undefined
+resolveStmt (SomeStmt (Class name _)) = define name . declare name
 
 resolveFunction :: SomeStmt -> FunctionType -> ResolverType -> ResolverType
 resolveFunction (SomeStmt (Function _ params body)) ftype resolverType =

@@ -118,7 +118,7 @@ classDeclaration = do
   _ <- consume RIGHT_BRACE "Expect '}' after class body."
   return $ Class className methods
  where
-  parseMethods = many (createCallable "method")
+  parseMethods = many $ createCallable "method"
 
 functionDeclaration :: MaybeT Planter (Stmt KFunction)
 functionDeclaration = do
@@ -127,7 +127,9 @@ functionDeclaration = do
 
 createCallable :: String -> MaybeT Planter (Stmt KFunction)
 createCallable callableType = do
-  name <- consume IDENTIFIER $ "Expect " ++ callableType ++ " name."
+  name <- if callableType == "function"
+    then consume IDENTIFIER $ "Expect " ++ callableType ++ " name."
+    else matchMaybeT (`notElem` [RIGHT_BRACE, EOF])
   _ <- consume LEFT_PAREN $ "Expect '(' after " ++ callableType ++ " name."
   params <- getParams
   _ <- consume LEFT_BRACE $ "Expect '{' before " ++ callableType ++ " body."
@@ -147,6 +149,13 @@ createCallable callableType = do
   endParamList buildup = do
     _ <- consume RIGHT_PAREN "Expect ')' after parameters."
     return $ reverse buildup
+  matchMaybeT predicate = MaybeT $ makePlanter $ \(inErrs, toks) ->
+    let t1 = head toks
+        rest = tail toks
+     in Just $
+          if predicate $ tokenType t1
+            then ((inErrs, rest), Just t1)
+            else ((inErrs, toks), Nothing)
 
 varDeclaration :: MaybeT Planter (Stmt KVar)
 varDeclaration = do

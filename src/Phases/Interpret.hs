@@ -57,7 +57,12 @@ interpret interp (SomeStmt (Function fname params body)) = do
 interpret interp (SomeStmt (Return _ expr)) = do
   (val, interp') <- interpretExpr interp expr
   throwError (val, interp')
-interpret _ (SomeStmt (Class _ _)) = undefined
+interpret interp (SomeStmt (Class name _)) = do
+  let interp' = define interp name VNil
+  let klass = VClass $ lexeme name
+  case assignTok interp' name klass of
+    Right interp'' -> return interp''
+    Left err -> lift $ throwError err
 
 execBlock :: Interpreter -> [SomeStmt] -> InterpretOutput Interpreter
 execBlock = foldM interpret
