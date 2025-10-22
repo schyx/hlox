@@ -82,6 +82,13 @@ interpretExpr interp (Call callee paren argExprs) = do
             $ runtimeError
               paren
             $ "Expected " ++ show (length params) ++ " arguments but got " ++ show (length args) ++ "."
+    (VClass className) ->
+      if null args
+        then return (VInstance className, callerInterp)
+        else lift . throwError
+          $ runtimeError
+            paren
+          $ "Expected 0 arguments but got " ++ show (length args) ++ "."
     _ -> lift . throwError $ runtimeError paren "Can only call functions and classes."
  where
   interpretExprs :: Interpreter -> [Expr] -> InterpretOutput ([Value], Interpreter)

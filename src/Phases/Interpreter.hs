@@ -175,6 +175,7 @@ data Value
   | VCall Int Token String
   | VFunction [Token] Token String (Interpreter -> [Value] -> ExceptT String IO (Value, Interpreter))
   | VClass String
+  | VInstance String
 
 instance Eq Value where
   (VNumber n1) == (VNumber n2) = n1 == n2
@@ -214,9 +215,14 @@ instance Ord Value where
     compare (params1, callee1, name1) (params2, callee2, name2)
   compare VFunction{} other = case other of
     VClass{} -> LT
+    VInstance{} -> LT
     _ -> GT
   compare (VClass name1) (VClass name2) = compare name1 name2
-  compare VClass{} _ = GT
+  compare VClass{} other = case other of 
+    VInstance{} -> LT
+    _ -> GT
+  compare (VInstance name1) (VInstance name2) = compare name1 name2
+  compare VInstance{} _ = GT
 
 instance Show Value where -- TODO: change literal to not include identifiers
   show (VNumber n) = formatNumber n
@@ -232,6 +238,7 @@ instance Show Value where -- TODO: change literal to not include identifiers
   show (VFunction _ _ s _) = s
   show (VCall _ _ s) = s
   show (VClass name) = name
+  show (VInstance name) = name ++ " instance"
 
 fromLiteral :: Literal -> Value
 fromLiteral (Tokens.Number n) = VNumber n
