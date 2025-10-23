@@ -12,4 +12,6 @@ data Expr
   | OrExpr Expr Token Expr
   | AndExpr Expr Token Expr
   | Call Expr Token [Expr] -- caller, paren, args
+  | Get Expr Token
+  | Set Expr Token Expr
   deriving (Show, Eq, Ord)

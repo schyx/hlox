@@ -15,6 +15,9 @@ import Tokens
 
 type InterpretOutput a = ExceptT (Value, Interpreter) (ExceptT String IO) a
 
+throwRuntimeError :: String -> InterpretOutput a
+throwRuntimeError = lift . throwError
+
 interpret :: Interpreter -> SomeStmt -> InterpretOutput Interpreter
 interpret interp (SomeStmt (Print expr)) = do
   (val, interp') <- interpretExpr interp expr
@@ -62,7 +65,7 @@ interpret interp (SomeStmt (Class name _)) = do
   let klass = VClass $ lexeme name
   case assignTok interp' name klass of
     Right interp'' -> return interp''
-    Left err -> lift $ throwError err
+    Left err -> throwRuntimeError err
 
 execBlock :: Interpreter -> [SomeStmt] -> InterpretOutput Interpreter
 execBlock = foldM interpret
@@ -78,18 +81,19 @@ interpretExpr interp (Call callee paren argExprs) = do
           (outputVal, outputInterp) <- lift $ func argsInterp args
           return (outputVal, restoreRunningEnv interp outputInterp)
         else
-          lift . throwError
+          throwRuntimeError
             $ runtimeError
               paren
             $ "Expected " ++ show (length params) ++ " arguments but got " ++ show (length args) ++ "."
     (VClass className) ->
       if null args
-        then return (VInstance className, callerInterp)
-        else lift . throwError
-          $ runtimeError
-            paren
-          $ "Expected 0 arguments but got " ++ show (length args) ++ "."
-    _ -> lift . throwError $ runtimeError paren "Can only call functions and classes."
+        then return $ newInstance className argsInterp
+        else
+          throwRuntimeError
+            $ runtimeError
+              paren
+            $ "Expected 0 arguments but got " ++ show (length args) ++ "."
+    _ -> throwRuntimeError $ runtimeError paren "Can only call functions and classes."
  where
   interpretExprs :: Interpreter -> [Expr] -> InterpretOutput ([Value], Interpreter)
   interpretExprs argsInterp [] = return ([], argsInterp)
@@ -101,7 +105,7 @@ interpretExpr interp expr@(Assign _ value) = do
   (val, interp') <- interpretExpr interp value
   case assign interp' expr val of
     Right assignedInterp -> return (val, assignedInterp)
-    Left err -> lift $ throwError err
+    Left err -> throwRuntimeError err
 interpretExpr interp (Binary left operator right) = do
   (leftVal, afterLeftInterp) <- interpretExpr interp left
   (rightVal, afterRightInterp) <- interpretExpr afterLeftInterp right
@@ -121,17 +125,17 @@ interpretExpr interp (Binary left operator right) = do
         Right (leftn, rightn) -> return $ VNumber $ leftn + rightn
         Left _ -> case (leftVal, rightVal) of
           (VStr lefts, VStr rights) -> return $ VStr $ lefts ++ rights
-          _ -> lift $ throwError $ runtimeError operator "Operands must be two numbers or two strings."
+          _ -> throwRuntimeError $ runtimeError operator "Operands must be two numbers or two strings."
     | Map.member (tokenType operator) numericBinaryTable =
         case toNumberPair leftVal rightVal operator of
           Right (leftn, rightn) ->
             return $ VNumber $ (numericBinaryTable Map.! tokenType operator) leftn rightn
-          Left err -> lift $ throwError err
+          Left err -> throwRuntimeError err
     | Map.member (tokenType operator) booleanBinaryTable =
         case toNumberPair leftVal rightVal operator of
           Right (leftn, rightn) ->
             return $ VBoolean $ (booleanBinaryTable Map.! tokenType operator) leftn rightn
-          Left err -> lift $ throwError err
+          Left err -> throwRuntimeError err
     | otherwise = error "Unexpected opType when interpreting binary"
   booleanBinaryTable =
     Map.fromList
@@ -152,13 +156,13 @@ interpretExpr interp (Unary operator expr) = do
     BANG -> return (VBoolean $ not $ isTruthy val, interp')
     MINUS -> case toNumber val operator of
       Right n -> return (VNumber $ -n, interp')
-      Left err -> lift $ throwError err
+      Left err -> throwRuntimeError err
     _ -> error "unexpected opType when interpreting unary"
 interpretExpr interp (Grouping expr) = interpretExpr interp expr
 interpretExpr interp expr@(Variable tok) =
   case lookupVariable interp tok expr of
     Right val -> return (val, interp)
-    Left err -> lift $ throwError err
+    Left err -> throwRuntimeError err
 interpretExpr interp (AndExpr left _ right) = do
   (val, interp') <- interpretExpr interp left
   if not $ isTruthy val
@@ -170,6 +174,21 @@ interpretExpr interp (OrExpr left _ right) = do
     then return (val, interp')
     else interpretExpr interp' right
 interpretExpr interp (Primary lit) = return (fromLiteral lit, interp)
+interpretExpr interp (Get object name) = do
+  (interpretedObject, interp') <- interpretExpr interp object
+  case interpretedObject of
+    VInstance _ properties _ ->
+      case properties Map.!? lexeme name of
+        Nothing -> throwRuntimeError $ runtimeError name "Undefined property '" ++ lexeme name ++ "'."
+        Just value -> return (value, interp')
+    _ -> throwRuntimeError $ runtimeError name "Only instances have properties."
+interpretExpr interp (Set object name value) = do
+  (interpretedObject, interp') <- interpretExpr interp object
+  case interpretedObject of
+    VInstance _ _ iid -> do
+      (interpretedValue, interp'') <- interpretExpr interp' value
+      return (interpretedValue, setProperty iid name interpretedValue interp'')
+    _ -> throwRuntimeError $ runtimeError name ""
 
 toNumberPair :: Value -> Value -> Token -> Either String (Double, Double)
 toNumberPair left right op = case (toNumber left op, toNumber right op) of

@@ -151,3 +151,7 @@ resolveExpr (AndExpr left _ right) =
 resolveExpr (Call caller _ args) =
   (\rt -> foldl (flip resolveExpr) rt args)
     . resolveExpr caller
+resolveExpr (Get object _) = resolveExpr object
+resolveExpr (Set object _ value) =
+  resolveExpr value
+    . resolveExpr object

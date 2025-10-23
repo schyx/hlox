@@ -127,9 +127,10 @@ functionDeclaration = do
 
 createCallable :: String -> MaybeT Planter (Stmt KFunction)
 createCallable callableType = do
-  name <- if callableType == "function"
-    then consume IDENTIFIER $ "Expect " ++ callableType ++ " name."
-    else matchMaybeT (`notElem` [RIGHT_BRACE, EOF])
+  name <-
+    if callableType == "function"
+      then consume IDENTIFIER $ "Expect " ++ callableType ++ " name."
+      else matchMaybeT (`notElem` [RIGHT_BRACE, EOF])
   _ <- consume LEFT_PAREN $ "Expect '(' after " ++ callableType ++ " name."
   params <- getParams
   _ <- consume LEFT_BRACE $ "Expect '{' before " ++ callableType ++ " body."
@@ -295,6 +296,7 @@ assignment = do
       value <- assignment
       case expr of
         Variable token -> return $ Assign token value
+        Get object name -> return $ Set object name value
         _ -> addParseError $ parseError equalSign "Invalid assignment target."
     )
     <||> return expr
@@ -343,14 +345,25 @@ unary :: MaybeT Planter Expr
 unary = (Unary <$> match (`elem` [MINUS, BANG]) <*> unary) <||> call
 
 call :: MaybeT Planter Expr
-call = callExpr <||> primary
+call = callOrGet <||> primary
  where
   -- TODO: refactor this maybe?
-  callExpr = do
+  callOrGet = do
     callee <- primary
-    leftParen <- match (== LEFT_PAREN)
-    leftCall <- Call callee leftParen <$> finishCall
-    callHelper leftCall
+    callOrGetLoop callee
+  callOrGetLoop callee =
+    ( do
+        leftParen <- match (== LEFT_PAREN)
+        leftCall <- Call callee leftParen <$> finishCall
+        callLoop <- callHelper leftCall
+        callOrGetLoop callLoop
+    )
+      <||> ( do
+              _ <- match (== DOT)
+              name <- consume IDENTIFIER "Expect property name after '.'."
+              callOrGetLoop $ Get callee name
+           )
+      <||> return callee
   callHelper leftCall =
     ( do
         newLeftParen <- match (== LEFT_PAREN)
