@@ -10,7 +10,7 @@ import Tokens (Token (lexeme))
 
 newtype Locals = Locals {resolverMap :: Map.Map Expr Int}
 
-data FunctionType = NONE | FUNCTION
+data FunctionType = NONE | FUNCTION | METHOD
   deriving (Eq)
 
 data ResolverType = ResolverType
@@ -114,7 +114,10 @@ resolveStmt (SomeStmt (Return keyword value)) = resolveExpr value . checkFunctio
     if currentFunction rt == NONE
       then addError keyword "Can't return from top-level code." rt
       else rt
-resolveStmt (SomeStmt (Class name _)) = define name . declare name
+resolveStmt (SomeStmt (Class name methods)) =
+  (\rt -> foldl (flip (\method -> resolveFunction (SomeStmt method) METHOD)) rt methods)
+    . define name
+    . declare name
 
 resolveFunction :: SomeStmt -> FunctionType -> ResolverType -> ResolverType
 resolveFunction (SomeStmt (Function _ params body)) ftype resolverType =

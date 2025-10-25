@@ -46,7 +46,23 @@ interpret interp (SomeStmt (While condition whileBlock)) = do
       interp'' <- interpret interp' whileBlock
       interpret interp'' (SomeStmt (While condition whileBlock))
     else return interp'
-interpret interp (SomeStmt (Function fname params body)) = do
+interpret interp func@(SomeStmt (Function fname _ _)) =
+  return $ define interp fname $ functionToValue interp func
+interpret interp (SomeStmt (Return _ expr)) = do
+  (val, interp') <- interpretExpr interp expr
+  throwError (val, interp')
+interpret interp (SomeStmt (Class name classMethods)) =
+  let interp' = define interp name VNil
+      foldFunc func@(Function fname _ _) =
+        Map.insert (lexeme fname) (functionToValue interp $ SomeStmt func)
+      methods = foldr foldFunc Map.empty classMethods
+      klass = VClass (lexeme name) methods
+   in case assignTok interp' name klass of
+        Right interp'' -> return interp''
+        Left err -> throwRuntimeError err
+
+functionToValue :: Interpreter -> SomeStmt -> Value
+functionToValue interp (SomeStmt (Function fname params body)) =
   let functionF interpreter args = do
         let enclosingInterp = restoreRunningEnv interp interpreter
         let fInterpInitial = createChildEnv enclosingInterp
@@ -55,17 +71,8 @@ interpret interp (SomeStmt (Function fname params body)) = do
         case run of
           Left (val, outputInterp) -> ExceptT $ return $ Right (val, outputInterp)
           Right outputInterp -> ExceptT $ return $ Right (VNil, outputInterp)
-  let functionVal = VFunction params fname ("<fn " ++ lexeme fname ++ ">") functionF
-  return $ define interp fname functionVal
-interpret interp (SomeStmt (Return _ expr)) = do
-  (val, interp') <- interpretExpr interp expr
-  throwError (val, interp')
-interpret interp (SomeStmt (Class name _)) = do
-  let interp' = define interp name VNil
-  let klass = VClass $ lexeme name
-  case assignTok interp' name klass of
-    Right interp'' -> return interp''
-    Left err -> throwRuntimeError err
+   in VFunction params fname ("<fn " ++ lexeme fname ++ ">") functionF
+functionToValue _ _ = error "Called this in the wrong place"
 
 execBlock :: Interpreter -> [SomeStmt] -> InterpretOutput Interpreter
 execBlock = foldM interpret
@@ -85,9 +92,9 @@ interpretExpr interp (Call callee paren argExprs) = do
             $ runtimeError
               paren
             $ "Expected " ++ show (length params) ++ " arguments but got " ++ show (length args) ++ "."
-    (VClass className) ->
+    (VClass className classMethods) ->
       if null args
-        then return $ newInstance className argsInterp
+        then return $ newInstance className classMethods argsInterp
         else
           throwRuntimeError
             $ runtimeError
@@ -176,19 +183,23 @@ interpretExpr interp (OrExpr left _ right) = do
 interpretExpr interp (Primary lit) = return (fromLiteral lit, interp)
 interpretExpr interp (Get object name) = do
   (interpretedObject, interp') <- interpretExpr interp object
-  case interpretedObject of
-    VInstance _ properties _ ->
-      case properties Map.!? lexeme name of
-        Nothing -> throwRuntimeError $ runtimeError name "Undefined property '" ++ lexeme name ++ "'."
-        Just value -> return (value, interp')
-    _ -> throwRuntimeError $ runtimeError name "Only instances have properties."
+  getFieldOrMethod interp' name interpretedObject
 interpretExpr interp (Set object name value) = do
   (interpretedObject, interp') <- interpretExpr interp object
   case interpretedObject of
-    VInstance _ _ iid -> do
+    VInstance _ _ _ iid -> do
       (interpretedValue, interp'') <- interpretExpr interp' value
       return (interpretedValue, setProperty iid name interpretedValue interp'')
     _ -> throwRuntimeError $ runtimeError name ""
+
+getFieldOrMethod :: Interpreter -> Token -> Value -> InterpretOutput (Value, Interpreter)
+getFieldOrMethod interp name (VInstance _ properties methods _) =
+  case properties Map.!? lexeme name of
+    Just value -> return (value, interp)
+    Nothing -> case methods Map.!? lexeme name of
+      Just method -> return (method, interp)
+      Nothing -> throwRuntimeError $ runtimeError name "Undefined property '" ++ lexeme name ++ "'."
+getFieldOrMethod _ name _ = throwRuntimeError $ runtimeError name "Only instances have properties."
 
 toNumberPair :: Value -> Value -> Token -> Either String (Double, Double)
 toNumberPair left right op = case (toNumber left op, toNumber right op) of

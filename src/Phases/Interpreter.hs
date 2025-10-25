@@ -1,3 +1,5 @@
+{-# LANGUAGE GADTs #-}
+
 module Phases.Interpreter (
   Interpreter (Interpreter),
   EnvID (..),
@@ -175,18 +177,18 @@ restoreRunningEnv (Interpreter _ _ env _ _) = setRunningEnv env
 setRunningEnv :: EnvID -> Interpreter -> Interpreter
 setRunningEnv envId (Interpreter table locals _ largest instanceId) = Interpreter table locals envId largest instanceId
 
-newInstance :: String -> Interpreter -> (Value, Interpreter)
-newInstance className (Interpreter table locals current largestId instanceId) =
-  ( VInstance className Map.empty instanceId
+newInstance :: String -> Map.Map String Value -> Interpreter -> (Value, Interpreter)
+newInstance className classMethods (Interpreter table locals current largestId instanceId) =
+  ( VInstance className Map.empty classMethods instanceId
   , Interpreter table locals current largestId $ nextInstanceId instanceId
   )
 
 setProperty :: InstanceID -> Token -> Value -> Interpreter -> Interpreter
 setProperty iid name val (Interpreter table locals current largest instanceId) =
-  let mapFunc (VInstance className properties otherIid) =
+  let mapFunc (VInstance className properties methods otherIid) =
         if iid == otherIid
-          then VInstance className (Map.insert (lexeme name) val properties) otherIid
-          else VInstance className (Map.map mapFunc properties) otherIid
+          then VInstance className (Map.insert (lexeme name) val properties) methods otherIid
+          else VInstance className (Map.map mapFunc properties) methods otherIid
       mapFunc other = other
       envMap (Environment vars pID) = Environment (Map.map mapFunc vars) pID
       table' = Map.map envMap table
@@ -199,8 +201,8 @@ data Value
   | VNil
   | VCall Int Token String
   | VFunction [Token] Token String (Interpreter -> [Value] -> ExceptT String IO (Value, Interpreter))
-  | VClass String
-  | VInstance String (Map.Map String Value) InstanceID
+  | VClass String (Map.Map String Value)
+  | VInstance String (Map.Map String Value) (Map.Map String Value) InstanceID
 
 instance Eq Value where
   (VNumber n1) == (VNumber n2) = n1 == n2
@@ -210,8 +212,8 @@ instance Eq Value where
   (VCall arity1 tok1 name1) == (VCall arity2 tok2 name2) = arity1 == arity2 && tok1 == tok2 && name1 == name2
   (VFunction params1 callee1 name1 _) == (VFunction params2 callee2 name2 _) =
     params1 == params2 && callee1 == callee2 && name1 == name2
-  (VClass name1) == (VClass name2) = name1 == name2
-  (VInstance _ _ iid1) == (VInstance _ _ iid2) = iid1 == iid2
+  (VClass name1 _) == (VClass name2 _) = name1 == name2
+  (VInstance _ _ _ iid1) == (VInstance _ _ _ iid2) = iid1 == iid2
   _ == _ = False
 
 instance Ord Value where
@@ -243,11 +245,11 @@ instance Ord Value where
     VClass{} -> LT
     VInstance{} -> LT
     _ -> GT
-  compare (VClass name1) (VClass name2) = compare name1 name2
+  compare (VClass name1 _) (VClass name2 _) = compare name1 name2
   compare VClass{} other = case other of
     VInstance{} -> LT
     _ -> GT
-  compare (VInstance _ _ iid1) (VInstance _ _ iid2) = compare iid1 iid2
+  compare (VInstance _ _ _ iid1) (VInstance _ _ _ iid2) = compare iid1 iid2
   compare VInstance{} _ = GT
 
 instance Show Value where -- TODO: change literal to not include identifiers
@@ -263,8 +265,8 @@ instance Show Value where -- TODO: change literal to not include identifiers
   show VNil = "nil"
   show (VFunction _ _ s _) = s
   show (VCall _ _ s) = s
-  show (VClass name) = name
-  show (VInstance name properties _) = name ++ " instance " ++ show properties
+  show (VClass name _) = name
+  show (VInstance name properties _ _) = name ++ " instance " ++ show properties
 
 fromLiteral :: Literal -> Value
 fromLiteral (Tokens.Number n) = VNumber n
