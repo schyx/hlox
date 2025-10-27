@@ -14,4 +14,5 @@ data Expr
   | Call Expr Token [Expr] -- caller, paren, args
   | Get Expr Token
   | Set Expr Token Expr
+  | This Token
   deriving (Show, Eq, Ord)

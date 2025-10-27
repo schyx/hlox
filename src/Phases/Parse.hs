@@ -26,15 +26,17 @@ runPlanter = runParser
 parse :: [Token] -> TreeResult
 parse input =
   let start = ([], input)
-   in ( \val ->
-          let value = fromMaybe undefined val
-              errs = fst . fst $ value
-              stmts = fromMaybe undefined $ sequenceA $ snd value
-           in if null errs
-                then Right stmts
-                else Left errs
-      )
-        $ runPlanter (many planter) start
+      output =
+        ( \val ->
+            let value = fromMaybe undefined val
+                errs = fst . fst $ value
+                stmts = fromMaybe undefined $ sequenceA $ snd value
+             in if null errs
+                  then Right stmts
+                  else Left errs
+        )
+          $ runPlanter (many planter) start
+   in output
 
 planter :: Planter (Maybe SomeStmt)
 planter = do
@@ -387,8 +389,9 @@ call = callOrGet <||> primary
         <||> (consume RIGHT_PAREN "Expect ')' after arguments." >> return (reverse newBuildup))
 
 primary :: MaybeT Planter Expr
-primary = createLiteral <||> createGrouping <||> createVariable <||> noPrimary
+primary = createThis <||> createLiteral <||> createGrouping <||> createVariable <||> noPrimary
  where
+  createThis = This <$> match (== THIS)
   createLiteral = Primary . literal <$> match (`elem` [FALSE, TRUE, NUMBER, STRING, NIL])
   createGrouping =
     Grouping

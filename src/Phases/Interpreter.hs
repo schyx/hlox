@@ -8,6 +8,7 @@ module Phases.Interpreter (
   createChildEnv,
   changeToParent,
   define,
+  assignThis,
   assign,
   assignTok,
   lookupVariable,
@@ -60,7 +61,7 @@ defaultInterpreter locals =
       clockFunc interp _ = do
         time <- liftIO getPOSIXTime
         return (VNumber (realToFrac time :: Double), interp)
-      clock = VFunction [] clockToken "<native fn>" clockFunc
+      clock = VFunction [] clockToken "<native fn>" undefined clockFunc
       globalEnv = Environment (Map.fromList [("clock", clock)]) Nothing
       table = Map.fromList [(EnvID 0, globalEnv)]
    in Interpreter table (resolverMap locals) (EnvID 0) (EnvID 0) (InstanceID 0)
@@ -111,6 +112,12 @@ assignTok (Interpreter table locals current largestId instanceId) token value =
       | Nothing <- parent ->
           Left $ runtimeError token $ "Undefined variable '" ++ lexeme token ++ "'."
     Nothing -> error "Can't assign in impossible env"
+
+assignThis :: Value -> Interpreter -> Interpreter
+assignThis value (Interpreter table locals current largestId instanceId) =
+  let Environment variables parent = table Map.! current
+      env = Environment (Map.insert "this" value variables) parent
+   in Interpreter (Map.insert current env table) locals current largestId instanceId
 
 assign :: Interpreter -> Expr -> Value -> Either String Interpreter
 assign interp@(Interpreter _ locals _ _ _) expr@(Assign name _) value =
@@ -194,13 +201,14 @@ setProperty iid name val (Interpreter table locals current largest instanceId) =
       table' = Map.map envMap table
    in Interpreter table' locals current largest instanceId
 
+-- TODO: use DataKinds to make instances contain methods
 data Value
   = VNumber Double
   | VStr String
   | VBoolean Bool
   | VNil
   | VCall Int Token String
-  | VFunction [Token] Token String (Interpreter -> [Value] -> ExceptT String IO (Value, Interpreter))
+  | VFunction [Token] Token String Interpreter (Interpreter -> [Value] -> ExceptT String IO (Value, Interpreter))
   | VClass String (Map.Map String Value)
   | VInstance String (Map.Map String Value) (Map.Map String Value) InstanceID
 
@@ -210,7 +218,7 @@ instance Eq Value where
   (VBoolean b1) == (VBoolean b2) = b1 == b2
   VNil == VNil = True
   (VCall arity1 tok1 name1) == (VCall arity2 tok2 name2) = arity1 == arity2 && tok1 == tok2 && name1 == name2
-  (VFunction params1 callee1 name1 _) == (VFunction params2 callee2 name2 _) =
+  (VFunction params1 callee1 name1 _ _) == (VFunction params2 callee2 name2 _ _) =
     params1 == params2 && callee1 == callee2 && name1 == name2
   (VClass name1 _) == (VClass name2 _) = name1 == name2
   (VInstance _ _ _ iid1) == (VInstance _ _ _ iid2) = iid1 == iid2
@@ -239,7 +247,7 @@ instance Ord Value where
     VFunction{} -> LT
     VClass{} -> LT
     _ -> GT
-  compare (VFunction params1 callee1 name1 _) (VFunction params2 callee2 name2 _) =
+  compare (VFunction params1 callee1 name1 _ _) (VFunction params2 callee2 name2 _ _) =
     compare (params1, callee1, name1) (params2, callee2, name2)
   compare VFunction{} other = case other of
     VClass{} -> LT
@@ -263,7 +271,7 @@ instance Show Value where -- TODO: change literal to not include identifiers
   show (VStr s) = s
   show (VBoolean b) = if b then "true" else "false"
   show VNil = "nil"
-  show (VFunction _ _ s _) = s
+  show (VFunction _ _ s _ _) = s
   show (VCall _ _ s) = s
   show (VClass name _) = name
   show (VInstance name properties _ _) = name ++ " instance " ++ show properties

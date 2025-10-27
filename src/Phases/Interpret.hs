@@ -54,7 +54,7 @@ interpret interp (SomeStmt (Return _ expr)) = do
 interpret interp (SomeStmt (Class name classMethods)) =
   let interp' = define interp name VNil
       foldFunc func@(Function fname _ _) =
-        Map.insert (lexeme fname) (functionToValue interp $ SomeStmt func)
+        Map.insert (lexeme fname) (functionToValue (createChildEnv interp) $ SomeStmt func)
       methods = foldr foldFunc Map.empty classMethods
       klass = VClass (lexeme name) methods
    in case assignTok interp' name klass of
@@ -66,12 +66,12 @@ functionToValue interp (SomeStmt (Function fname params body)) =
   let functionF interpreter args = do
         let enclosingInterp = restoreRunningEnv interp interpreter
         let fInterpInitial = createChildEnv enclosingInterp
-        let fInterp = foldr (\(tok, val) prevInterp -> define prevInterp tok val) fInterpInitial (zip params args)
+        let fInterp = foldr (\(tok, val) prevInterp -> define prevInterp tok val) fInterpInitial (zip params args) -- TODO: maybe this needs to be foldl?
         run <- runExceptT $ execBlock fInterp body
         case run of
           Left (val, outputInterp) -> ExceptT $ return $ Right (val, outputInterp)
           Right outputInterp -> ExceptT $ return $ Right (VNil, outputInterp)
-   in VFunction params fname ("<fn " ++ lexeme fname ++ ">") functionF
+   in VFunction params fname ("<fn " ++ lexeme fname ++ ">") interp functionF
 functionToValue _ _ = error "Called this in the wrong place"
 
 execBlock :: Interpreter -> [SomeStmt] -> InterpretOutput Interpreter
@@ -82,7 +82,7 @@ interpretExpr interp (Call callee paren argExprs) = do
   (val, callerInterp) <- interpretExpr interp callee
   (args, argsInterp) <- interpretExprs callerInterp argExprs
   case val of
-    (VFunction params _ _ func) ->
+    (VFunction params _ _ _ func) ->
       if length params == length args
         then do
           (outputVal, outputInterp) <- lift $ func argsInterp args
@@ -191,13 +191,21 @@ interpretExpr interp (Set object name value) = do
       (interpretedValue, interp'') <- interpretExpr interp' value
       return (interpretedValue, setProperty iid name interpretedValue interp'')
     _ -> throwRuntimeError $ runtimeError name ""
+interpretExpr interp expr@(This keyword) =
+  case lookupVariable interp keyword expr of
+    Right value -> return (value, interp)
+    Left err -> throwRuntimeError err
 
 getFieldOrMethod :: Interpreter -> Token -> Value -> InterpretOutput (Value, Interpreter)
-getFieldOrMethod interp name (VInstance _ properties methods _) =
+getFieldOrMethod interp name inst@(VInstance _ properties methods _) =
   case properties Map.!? lexeme name of
     Just value -> return (value, interp)
     Nothing -> case methods Map.!? lexeme name of
-      Just method -> return (method, interp)
+      Just (VFunction params leftParen fname definingInterp func) ->
+        let interpWithThis = assignThis inst definingInterp
+            method = VFunction params leftParen fname definingInterp func
+         in return (method, interpWithThis)
+      Just _ -> error "Should not happen"
       Nothing -> throwRuntimeError $ runtimeError name "Undefined property '" ++ lexeme name ++ "'."
 getFieldOrMethod _ name _ = throwRuntimeError $ runtimeError name "Only instances have properties."
 

@@ -115,7 +115,10 @@ resolveStmt (SomeStmt (Return keyword value)) = resolveExpr value . checkFunctio
       then addError keyword "Can't return from top-level code." rt
       else rt
 resolveStmt (SomeStmt (Class name methods)) =
-  (\rt -> foldl (flip (\method -> resolveFunction (SomeStmt method) METHOD)) rt methods)
+  endScope
+    . (\rt -> foldl (flip (\method -> resolveFunction (SomeStmt method) METHOD)) rt methods)
+    . (\rt -> rt{scopes = Map.insert "this" True (head $ scopes rt) : tail (scopes rt)})
+    . beginScope
     . define name
     . declare name
 
@@ -158,3 +161,4 @@ resolveExpr (Get object _) = resolveExpr object
 resolveExpr (Set object _ value) =
   resolveExpr value
     . resolveExpr object
+resolveExpr expr@(This keyword) = resolveLocal expr keyword
