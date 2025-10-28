@@ -3,6 +3,7 @@
 module Phases.Resolver (resolve, Locals (..)) where
 
 import qualified Data.Map as Map
+import Data.Maybe (fromMaybe)
 import Error (resolveError)
 import Phases.Expr (Expr (..))
 import Phases.Stmt (SomeStmt (SomeStmt), Stmt (..))
@@ -13,11 +14,15 @@ newtype Locals = Locals {resolverMap :: Map.Map Expr Int}
 data FunctionType = NONE | FUNCTION | METHOD
   deriving (Eq)
 
+data ClassType = NO_CLASS | CLASS
+  deriving (Eq)
+
 data ResolverType = ResolverType
   { errs :: [String]
   , currentResolverMap :: Map.Map Expr Int
   , scopes :: [Map.Map String Bool]
   , currentFunction :: FunctionType
+  , currentClass :: ClassType
   }
 
 addError :: Token -> String -> ResolverType -> ResolverType
@@ -58,6 +63,7 @@ resolve inputStmts =
           , currentResolverMap = Map.empty
           , scopes = []
           , currentFunction = NONE
+          , currentClass = NO_CLASS
           }
       outputResolverType = foldl (flip resolveStmt) emptyResolverType inputStmts
    in if null $ errs outputResolverType
@@ -105,7 +111,7 @@ resolveStmt (SomeStmt (While condition body)) =
   resolveStmt body
     . resolveExpr condition
 resolveStmt stmt@(SomeStmt (Function name _ _)) =
-  resolveFunction stmt FUNCTION
+  resolveFunction stmt FUNCTION Nothing
     . define name
     . declare name
 resolveStmt (SomeStmt (Return keyword value)) = resolveExpr value . checkFunctionType
@@ -116,23 +122,24 @@ resolveStmt (SomeStmt (Return keyword value)) = resolveExpr value . checkFunctio
       else rt
 resolveStmt (SomeStmt (Class name methods)) =
   endScope
-    . (\rt -> foldl (flip (\method -> resolveFunction (SomeStmt method) METHOD)) rt methods)
+    . (\rt -> foldl (flip (\method -> resolveFunction (SomeStmt method) METHOD $ Just CLASS)) rt methods)
     . (\rt -> rt{scopes = Map.insert "this" True (head $ scopes rt) : tail (scopes rt)})
     . beginScope
     . define name
     . declare name
 
-resolveFunction :: SomeStmt -> FunctionType -> ResolverType -> ResolverType
-resolveFunction (SomeStmt (Function _ params body)) ftype resolverType =
+resolveFunction :: SomeStmt -> FunctionType -> Maybe ClassType -> ResolverType -> ResolverType
+resolveFunction (SomeStmt (Function _ params body)) ftype ctype resolverType =
   ( endScope
       . (\rt -> foldl (flip resolveStmt) rt body) -- resolve body
       . (\rt -> foldl (flip $ \tok -> define tok . declare tok) rt params) -- resolve params
       . beginScope
-      $ resolverType{currentFunction = ftype}
+      $ resolverType{currentFunction = ftype, currentClass = fromMaybe (currentClass resolverType) ctype}
   )
     { currentFunction = currentFunction resolverType
+    , currentClass = currentClass resolverType
     }
-resolveFunction _ _ _ = error "called incorrectly"
+resolveFunction _ _ _ _ = error "called incorrectly"
 
 resolveExpr :: Expr -> ResolverType -> ResolverType
 resolveExpr expr@(Assign name value) = resolveLocal expr name . resolveExpr value
@@ -161,4 +168,9 @@ resolveExpr (Get object _) = resolveExpr object
 resolveExpr (Set object _ value) =
   resolveExpr value
     . resolveExpr object
-resolveExpr expr@(This keyword) = resolveLocal expr keyword
+resolveExpr expr@(This keyword) = resolveLocal expr keyword . checkClassType
+ where
+  checkClassType rt =
+    if currentClass rt == NO_CLASS
+      then addError keyword "Can't use 'this' outside of a class." rt
+      else rt
