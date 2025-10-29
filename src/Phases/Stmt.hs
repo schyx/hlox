@@ -29,5 +29,5 @@ data Stmt (k :: StmtKind) where
   If :: Expr -> SomeStmt -> Maybe SomeStmt -> Stmt 'KIf
   While :: Expr -> SomeStmt -> Stmt 'KWhile
   Function :: Token -> [Token] -> [SomeStmt] -> Stmt 'KFunction
-  Return :: Token -> Expr -> Stmt 'KReturn
+  Return :: Token -> Maybe Expr -> Stmt 'KReturn
   Class :: Token -> [Stmt 'KFunction] -> Stmt 'KClass

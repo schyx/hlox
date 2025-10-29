@@ -36,16 +36,20 @@ scanTokens :: String -> ScanResult
 scanTokens contents =
   addResult
     ([], [])
-    $ snd
-    $ fromMaybe undefined
-    $ runLoxScanner (many scanner) (ScannerData{restOfInput = contents, scannerLine = 1, scannerOffset = 1})
+    inputLines
+    $ snd scannerData
  where
-  addResult (errs, toks) [] =
+  scannerData =
+    fromMaybe
+      undefined
+      $ runLoxScanner (many scanner) (ScannerData{restOfInput = contents, scannerLine = 1, scannerOffset = 1})
+  inputLines = scannerLine . fst $ scannerData
+  addResult (errs, toks) eofLine [] =
     ( reverse errs
-    , reverse $ MkToken{tokenType = EOF, offset = 1, literal = Nil, line = 1, lexeme = ""} : toks
+    , reverse $ MkToken{tokenType = EOF, offset = 1, literal = Nil, line = eofLine, lexeme = ""} : toks
     )
-  addResult (errs, toks) ((Left err) : others) = addResult (err : errs, toks) others
-  addResult (errs, toks) ((Right tok) : others) = addResult (errs, tok : toks) others
+  addResult (errs, toks) eofLine ((Left err) : others) = addResult (err : errs, toks) eofLine others
+  addResult (errs, toks) eofLine ((Right tok) : others) = addResult (errs, tok : toks) eofLine others
 
 scanner :: LoxScanner (Either String Token)
 scanner =

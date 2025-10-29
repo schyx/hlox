@@ -250,11 +250,11 @@ returnStatement = do
  where
   emptyReturn returnToken = do
     _ <- match (== SEMICOLON)
-    return $ Return returnToken $ Primary Nil
+    return $ Return returnToken Nothing
   hasExprReturn returnToken = do
     expr <- expression
     _ <- consume SEMICOLON "Expect ';' after return value."
-    return $ Return returnToken expr
+    return $ Return returnToken $ Just expr
 
 whileStatement :: MaybeT Planter (Stmt KWhile)
 whileStatement = do
@@ -299,7 +299,7 @@ assignment = do
       case expr of
         Variable token -> return $ Assign token value
         Get object name -> return $ Set object name value
-        _ -> addParseError $ parseError equalSign "Invalid assignment target."
+        _ -> This equalSign <$ addNonBlockingParseError (parseError equalSign "Invalid assignment target.")
     )
     <||> return expr
 

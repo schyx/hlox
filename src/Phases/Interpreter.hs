@@ -3,6 +3,7 @@
 module Phases.Interpreter (
   Interpreter (Interpreter),
   EnvID (..),
+  addFunction,
   defaultInterpreter,
   fromLiteral,
   createChildEnv,
@@ -13,6 +14,7 @@ module Phases.Interpreter (
   assignTok,
   lookupVariable,
   get,
+  getAt,
   restoreRunningEnv,
   newInstance,
   setProperty,
@@ -30,7 +32,7 @@ import Phases.Expr (Expr (..))
 import Phases.Resolver (Locals (resolverMap))
 import Tokens
 
-data Interpreter = Interpreter (Map.Map EnvID Environment) (Map.Map Expr Int) EnvID EnvID InstanceID
+data Interpreter = Interpreter (Map.Map EnvID Environment) (Map.Map Expr Int) EnvID EnvID InstanceID FuncCounter
   deriving (Show)
 
 data Environment = Environment (Map.Map String Value) (Maybe EnvID)
@@ -48,6 +50,22 @@ newtype InstanceID = InstanceID Int
 nextInstanceId :: InstanceID -> InstanceID
 nextInstanceId (InstanceID instanceId) = InstanceID $ instanceId + 1
 
+newtype FunctionID = FunctionID Int
+  deriving (Show, Eq, Ord)
+
+newtype FuncCounter = FuncCounter (Map.Map ([Token], Token, String, Bool) FunctionID)
+  deriving (Show)
+
+addFunction :: [Token] -> Token -> String -> Bool -> Interpreter -> (Interpreter -> [Value] -> ExceptT String IO (Value, Interpreter)) -> Interpreter -> (Value, Interpreter)
+addFunction params leftParen fname isInitializer definingInterp func (Interpreter table locals current largest iid (FuncCounter fc)) =
+  case fc Map.!? (params, leftParen, fname, isInitializer) of
+    Nothing ->
+      let newFc = FuncCounter $ Map.insert (params, leftParen, fname, isInitializer) (FunctionID 0) fc
+       in (VFunction params leftParen fname isInitializer definingInterp func $ FunctionID 0, Interpreter table locals current largest iid newFc)
+    Just (FunctionID count) ->
+      let newFc = FuncCounter $ Map.insert (params, leftParen, fname, isInitializer) (FunctionID $ count + 1) fc
+       in (VFunction params leftParen fname isInitializer definingInterp func $ FunctionID $ count + 1, Interpreter table locals current largest iid newFc)
+
 defaultInterpreter :: Locals -> Interpreter
 defaultInterpreter locals =
   let clockToken =
@@ -61,117 +79,119 @@ defaultInterpreter locals =
       clockFunc interp _ = do
         time <- liftIO getPOSIXTime
         return (VNumber (realToFrac time :: Double), interp)
-      clock = VFunction [] clockToken "<native fn>" undefined clockFunc
+      clock = VFunction [] clockToken "<native fn>" False undefined clockFunc (FunctionID 0)
       globalEnv = Environment (Map.fromList [("clock", clock)]) Nothing
       table = Map.fromList [(EnvID 0, globalEnv)]
-   in Interpreter table (resolverMap locals) (EnvID 0) (EnvID 0) (InstanceID 0)
+   in Interpreter table (resolverMap locals) (EnvID 0) (EnvID 0) (InstanceID 0) (FuncCounter Map.empty)
 
 createChildEnv :: Interpreter -> Interpreter
-createChildEnv (Interpreter table locals current largestId instanceId) =
+createChildEnv (Interpreter table locals current largestId instanceId fc) =
   case table Map.!? current of
     Just _ ->
       let outputId = nextLargest largestId
           emptyEnv = Environment Map.empty $ Just current
           newTable = Map.insert outputId emptyEnv table
-          outputInterpreter = Interpreter newTable locals outputId outputId instanceId
+          outputInterpreter = Interpreter newTable locals outputId outputId instanceId fc
        in outputInterpreter
     Nothing -> error "parentId doesn't exist in Map"
 
 changeToParent :: Interpreter -> Interpreter
-changeToParent (Interpreter table locals current largestId instanceId) =
+changeToParent (Interpreter table locals current largestId instanceId fc) =
   case table Map.!? current of
     Just (Environment _ parent) ->
       case parent of
-        Just pEnv -> Interpreter table locals pEnv largestId instanceId
+        Just pEnv -> Interpreter table locals pEnv largestId instanceId fc
         Nothing -> error "can't change to parent when no parent"
     Nothing -> error "parentId doesn't exist in Map"
 
 define :: Interpreter -> Token -> Value -> Interpreter
-define (Interpreter table locals current largestId instanceId) token value =
+define (Interpreter table locals current largestId instanceId fc) token value =
   case table Map.!? current of
     Just (Environment envTable parent) ->
       let envTable' = Map.insert (lexeme token) value envTable
           env' = Environment envTable' parent
           table' = Map.insert current env' table
-       in Interpreter table' locals current largestId instanceId
+       in Interpreter table' locals current largestId instanceId fc
     Nothing -> error "can't define in impossible env"
 
 assignTok :: Interpreter -> Token -> Value -> Either String Interpreter
-assignTok (Interpreter table locals current largestId instanceId) token value =
+assignTok (Interpreter table locals current largestId instanceId fc) token value =
   case table Map.!? current of
     Just (Environment envTable parent)
       | Map.member (lexeme token) envTable ->
           let envTable' = Map.insert (lexeme token) value envTable
               env' = Environment envTable' parent
               table' = Map.insert current env' table
-              interp' = Interpreter table' locals current largestId instanceId
+              interp' = Interpreter table' locals current largestId instanceId fc
            in Right interp'
       | Just pEnv <- parent -> do
-          (Interpreter table' _ _ _ _) <- assignTok (Interpreter table locals pEnv largestId instanceId) token value
-          return $ Interpreter table' locals current largestId instanceId
+          (Interpreter table' _ _ _ _ _) <- assignTok (Interpreter table locals pEnv largestId instanceId fc) token value
+          return $ Interpreter table' locals current largestId instanceId fc
       | Nothing <- parent ->
           Left $ runtimeError token $ "Undefined variable '" ++ lexeme token ++ "'."
     Nothing -> error "Can't assign in impossible env"
 
-assignThis :: Value -> Interpreter -> Interpreter
-assignThis value (Interpreter table locals current largestId instanceId) =
-  let Environment variables parent = table Map.! current
+assignThis :: Value -> Interpreter -> Interpreter -> Interpreter
+assignThis value (Interpreter _ _ thisInterp _ _ _) (Interpreter table locals current largestId instanceId fc) =
+  let Environment variables parent = case table Map.!? thisInterp of
+        Nothing -> error "here"
+        Just e -> e
       env = Environment (Map.insert "this" value variables) parent
-   in Interpreter (Map.insert current env table) locals current largestId instanceId
+   in Interpreter (Map.insert thisInterp env table) locals current largestId instanceId fc
 
 assign :: Interpreter -> Expr -> Value -> Either String Interpreter
-assign interp@(Interpreter _ locals _ _ _) expr@(Assign name _) value =
+assign interp@(Interpreter _ locals _ _ _ _) expr@(Assign name _) value =
   case locals Map.!? expr of
     Nothing -> assignGlobal interp name value
     Just distance -> assignAt interp distance name value
 assign _ _ _ = error ""
 
 assignAt :: Interpreter -> Int -> Token -> Value -> Either String Interpreter
-assignAt interp@(Interpreter table locals current largestId instanceId) distance name val =
+assignAt interp@(Interpreter table locals current largestId instanceId fc) distance name val =
   let ancestorId = ancestor distance interp current
       Environment envTable parent = fromMaybe (error "in assignAt") (table Map.!? ancestorId)
       newTable = Map.insert ancestorId (Environment (Map.insert (lexeme name) val envTable) parent) table
-   in Right $ Interpreter newTable locals current largestId instanceId
+   in Right $ Interpreter newTable locals current largestId instanceId fc
 
 assignGlobal :: Interpreter -> Token -> Value -> Either String Interpreter
-assignGlobal (Interpreter table locals current largestId instanceId) token value =
+assignGlobal (Interpreter table locals current largestId instanceId fc) token value =
   let Environment globalTable pEnv = table Map.! EnvID 0
       newGlobalEnv = Environment (Map.insert (lexeme token) value globalTable) pEnv
    in case globalTable Map.!? lexeme token of
-        Just _ -> Right $ Interpreter (Map.insert (EnvID 0) newGlobalEnv table) locals current largestId instanceId
+        Just _ -> Right $ Interpreter (Map.insert (EnvID 0) newGlobalEnv table) locals current largestId instanceId fc
         Nothing -> Left $ runtimeError token $ "Undefined variable '" ++ lexeme token ++ "'."
 
 lookupVariable :: Interpreter -> Token -> Expr -> Either String Value
-lookupVariable interp@(Interpreter table locals _ _ _) name expr =
+lookupVariable interp@(Interpreter table locals _ _ _ _) name expr =
   case locals Map.!? expr of
     Nothing ->
       let Environment envTable _ = table Map.! EnvID 0
        in case envTable Map.!? lexeme name of
             Nothing -> Left (runtimeError name $ "Undefined variable '" ++ lexeme name ++ "'.")
             Just val -> Right val
-    Just distance -> getAt interp distance name
+    Just distance -> Right $ getAt interp distance $ lexeme name
 
-getAt :: Interpreter -> Int -> Token -> Either String Value
-getAt interp@(Interpreter table _ current _ _) distance name =
+getAt :: Interpreter -> Int -> String -> Value
+getAt interp@(Interpreter table _ current _ _ _) distance name =
   let Environment envTable _ = fromMaybe (error "in getAt") (table Map.!? ancestor distance interp current)
-   in case envTable Map.!? lexeme name of
-        Nothing -> error $ "getting " ++ lexeme name ++ " at line " ++ show (line name) ++ " from envTable, distance is " ++ show distance ++ ", current is " ++ show current ++ "\n\n     interp is " ++ show interp
-        Just val -> Right val
+   in case envTable Map.!? name of
+        Nothing -> error $ "getting " ++ name ++ " from envTable, distance is " ++ show distance ++ ", current is " ++ show current ++ "\n\n     interp is " ++ show interp
+        Just val -> val
 
 get :: Interpreter -> Token -> Either String Value
-get (Interpreter table locals current largestId instanceId) token =
+get (Interpreter table locals current largestId instanceId fc) token =
   case table Map.!? current of
     Just (Environment envTable parent) ->
       case envTable Map.!? lexeme token of
         Just val -> Right val
         Nothing ->
           case parent of
-            Just pEnv -> get (Interpreter table locals pEnv largestId instanceId) token
+            Just pEnv -> get (Interpreter table locals pEnv largestId instanceId fc) token
             Nothing -> Left $ runtimeError token ("Undefined variable '" ++ lexeme token ++ "'.")
     Nothing -> error "Can't get from impossible nev"
 
 ancestor :: Int -> Interpreter -> EnvID -> EnvID
-ancestor distance interp@(Interpreter table _ _ _ _) childId
+ancestor distance interp@(Interpreter table _ _ _ _ _) childId
   | distance == 0 = childId
   | otherwise = ancestor (distance - 1) interp $
       case table Map.!? childId of
@@ -179,19 +199,19 @@ ancestor distance interp@(Interpreter table _ _ _ _) childId
         Nothing -> error "in ancestor"
 
 restoreRunningEnv :: Interpreter -> Interpreter -> Interpreter
-restoreRunningEnv (Interpreter _ _ env _ _) = setRunningEnv env
+restoreRunningEnv (Interpreter _ _ env _ _ _) = setRunningEnv env
 
 setRunningEnv :: EnvID -> Interpreter -> Interpreter
-setRunningEnv envId (Interpreter table locals _ largest instanceId) = Interpreter table locals envId largest instanceId
+setRunningEnv envId (Interpreter table locals _ largest instanceId fc) = Interpreter table locals envId largest instanceId fc
 
 newInstance :: String -> Map.Map String Value -> Interpreter -> (Value, Interpreter)
-newInstance className classMethods (Interpreter table locals current largestId instanceId) =
+newInstance className classMethods (Interpreter table locals current largestId instanceId fc) =
   ( VInstance className Map.empty classMethods instanceId
-  , Interpreter table locals current largestId $ nextInstanceId instanceId
+  , Interpreter table locals current largestId (nextInstanceId instanceId) fc
   )
 
 setProperty :: InstanceID -> Token -> Value -> Interpreter -> Interpreter
-setProperty iid name val (Interpreter table locals current largest instanceId) =
+setProperty iid name val (Interpreter table locals current largest instanceId fc) =
   let mapFunc (VInstance className properties methods otherIid) =
         if iid == otherIid
           then VInstance className (Map.insert (lexeme name) val properties) methods otherIid
@@ -199,7 +219,7 @@ setProperty iid name val (Interpreter table locals current largest instanceId) =
       mapFunc other = other
       envMap (Environment vars pID) = Environment (Map.map mapFunc vars) pID
       table' = Map.map envMap table
-   in Interpreter table' locals current largest instanceId
+   in Interpreter table' locals current largest instanceId fc
 
 -- TODO: use DataKinds to make instances contain methods
 data Value
@@ -208,8 +228,8 @@ data Value
   | VBoolean Bool
   | VNil
   | VCall Int Token String
-  | VFunction [Token] Token String Interpreter (Interpreter -> [Value] -> ExceptT String IO (Value, Interpreter))
-  | VClass String (Map.Map String Value)
+  | VFunction [Token] Token String Bool Interpreter (Interpreter -> [Value] -> ExceptT String IO (Value, Interpreter)) FunctionID
+  | VClass String Int (Map.Map String Value)
   | VInstance String (Map.Map String Value) (Map.Map String Value) InstanceID
 
 instance Eq Value where
@@ -218,9 +238,9 @@ instance Eq Value where
   (VBoolean b1) == (VBoolean b2) = b1 == b2
   VNil == VNil = True
   (VCall arity1 tok1 name1) == (VCall arity2 tok2 name2) = arity1 == arity2 && tok1 == tok2 && name1 == name2
-  (VFunction params1 callee1 name1 _ _) == (VFunction params2 callee2 name2 _ _) =
-    params1 == params2 && callee1 == callee2 && name1 == name2
-  (VClass name1 _) == (VClass name2 _) = name1 == name2
+  (VFunction params1 callee1 name1 isInit1 _ _ fid1) == (VFunction params2 callee2 name2 isInit2 _ _ fid2) =
+    params1 == params2 && callee1 == callee2 && name1 == name2 && isInit1 == isInit2 && fid1 == fid2
+  (VClass name1 _ _) == (VClass name2 _ _) = name1 == name2
   (VInstance _ _ _ iid1) == (VInstance _ _ _ iid2) = iid1 == iid2
   _ == _ = False
 
@@ -247,13 +267,13 @@ instance Ord Value where
     VFunction{} -> LT
     VClass{} -> LT
     _ -> GT
-  compare (VFunction params1 callee1 name1 _ _) (VFunction params2 callee2 name2 _ _) =
-    compare (params1, callee1, name1) (params2, callee2, name2)
+  compare (VFunction params1 callee1 name1 isInit1 _ _ fid1) (VFunction params2 callee2 name2 isInit2 _ _ fid2) =
+    compare (params1, callee1, name1, isInit1, fid1) (params2, callee2, name2, isInit2, fid2)
   compare VFunction{} other = case other of
     VClass{} -> LT
     VInstance{} -> LT
     _ -> GT
-  compare (VClass name1 _) (VClass name2 _) = compare name1 name2
+  compare (VClass name1 _ _) (VClass name2 _ _) = compare name1 name2
   compare VClass{} other = case other of
     VInstance{} -> LT
     _ -> GT
@@ -271,10 +291,10 @@ instance Show Value where -- TODO: change literal to not include identifiers
   show (VStr s) = s
   show (VBoolean b) = if b then "true" else "false"
   show VNil = "nil"
-  show (VFunction _ _ s _ _) = s
+  show (VFunction _ _ s _ _ _ _) = s
   show (VCall _ _ s) = s
-  show (VClass name _) = name
-  show (VInstance name properties _ _) = name ++ " instance " ++ show properties
+  show (VClass name _ _) = name
+  show (VInstance name _ _ _) = name ++ " instance"
 
 fromLiteral :: Literal -> Value
 fromLiteral (Tokens.Number n) = VNumber n

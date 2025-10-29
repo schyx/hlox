@@ -47,22 +47,30 @@ interpret interp (SomeStmt (While condition whileBlock)) = do
       interpret interp'' (SomeStmt (While condition whileBlock))
     else return interp'
 interpret interp func@(SomeStmt (Function fname _ _)) =
-  return $ define interp fname $ functionToValue interp func
-interpret interp (SomeStmt (Return _ expr)) = do
-  (val, interp') <- interpretExpr interp expr
-  throwError (val, interp')
+  let (funcObj, interp') = functionToValue interp False func
+   in return $ define interp' fname funcObj
+interpret interp (SomeStmt (Return _ returnValue)) =
+  case returnValue of
+    Nothing -> throwError (VNil, interp)
+    Just value -> do
+      (val, interp') <- interpretExpr interp value
+      throwError (val, interp')
 interpret interp (SomeStmt (Class name classMethods)) =
   let interp' = define interp name VNil
       foldFunc func@(Function fname _ _) =
-        Map.insert (lexeme fname) (functionToValue (createChildEnv interp) $ SomeStmt func)
+        Map.insert (lexeme fname) (fst $ functionToValue (createChildEnv interp) (lexeme fname == "init") (SomeStmt func))
       methods = foldr foldFunc Map.empty classMethods
-      klass = VClass (lexeme name) methods
+      arity = case methods Map.!? "init" of
+        Nothing -> 0
+        Just (VFunction args _ _ _ _ _ _) -> length args
+        Just _ -> error "bruh"
+      klass = VClass (lexeme name) arity methods
    in case assignTok interp' name klass of
-        Right interp'' -> return interp''
+        Right interp'' -> return (restoreRunningEnv interp'' $ createChildEnv interp'')
         Left err -> throwRuntimeError err
 
-functionToValue :: Interpreter -> SomeStmt -> Value
-functionToValue interp (SomeStmt (Function fname params body)) =
+functionToValue :: Interpreter -> Bool -> SomeStmt -> (Value, Interpreter)
+functionToValue interp isInitializer (SomeStmt (Function fname params body)) =
   let functionF interpreter args = do
         let enclosingInterp = restoreRunningEnv interp interpreter
         let fInterpInitial = createChildEnv enclosingInterp
@@ -71,8 +79,8 @@ functionToValue interp (SomeStmt (Function fname params body)) =
         case run of
           Left (val, outputInterp) -> ExceptT $ return $ Right (val, outputInterp)
           Right outputInterp -> ExceptT $ return $ Right (VNil, outputInterp)
-   in VFunction params fname ("<fn " ++ lexeme fname ++ ">") interp functionF
-functionToValue _ _ = error "Called this in the wrong place"
+   in addFunction params fname ("<fn " ++ lexeme fname ++ ">") isInitializer interp functionF interp
+functionToValue _ _ _ = error "Called this in the wrong place"
 
 execBlock :: Interpreter -> [SomeStmt] -> InterpretOutput Interpreter
 execBlock = foldM interpret
@@ -82,26 +90,36 @@ interpretExpr interp (Call callee paren argExprs) = do
   (val, callerInterp) <- interpretExpr interp callee
   (args, argsInterp) <- interpretExprs callerInterp argExprs
   case val of
-    (VFunction params _ _ _ func) ->
-      if length params == length args
-        then do
-          (outputVal, outputInterp) <- lift $ func argsInterp args
-          return (outputVal, restoreRunningEnv interp outputInterp)
-        else
-          throwRuntimeError
-            $ runtimeError
-              paren
-            $ "Expected " ++ show (length params) ++ " arguments but got " ++ show (length args) ++ "."
-    (VClass className classMethods) ->
-      if null args
-        then return $ newInstance className classMethods argsInterp
-        else
-          throwRuntimeError
-            $ runtimeError
-              paren
-            $ "Expected 0 arguments but got " ++ show (length args) ++ "."
+    function@VFunction{} -> callFunction argsInterp args function
+    (VClass className _ classMethods) ->
+      let (inst, instInterp) = newInstance className classMethods argsInterp
+       in case classMethods Map.!? "init" of
+            Nothing ->
+              if null args
+                then return (inst, instInterp)
+                else throwRuntimeError $ runtimeError paren $ "Expected 0 arguments but got " ++ show (length args) ++ "."
+            Just initializer@(VFunction _ _ _ _ funcInterp _ _) ->
+              callFunction (assignThis inst funcInterp instInterp) args initializer
+            Just _ -> error "buhhhhh"
     _ -> throwRuntimeError $ runtimeError paren "Can only call functions and classes."
  where
+  callFunction :: Interpreter -> [Value] -> Value -> InterpretOutput (Value, Interpreter)
+  callFunction callInterp args (VFunction params _ _ isInitializer _ func _) =
+    if length params == length args
+      then do
+        (outputVal, outputInterp) <- lift $ func callInterp args
+        return
+          ( if isInitializer
+              then getAt outputInterp 1 "this"
+              else outputVal
+          , restoreRunningEnv interp outputInterp
+          )
+      else
+        throwRuntimeError
+          $ runtimeError
+            paren
+          $ "Expected " ++ show (length params) ++ " arguments but got " ++ show (length args) ++ "."
+  callFunction _ _ _ = error "calling wrong"
   interpretExprs :: Interpreter -> [Expr] -> InterpretOutput ([Value], Interpreter)
   interpretExprs argsInterp [] = return ([], argsInterp)
   interpretExprs argsInterp (expr : exprs) = do
@@ -190,7 +208,7 @@ interpretExpr interp (Set object name value) = do
     VInstance _ _ _ iid -> do
       (interpretedValue, interp'') <- interpretExpr interp' value
       return (interpretedValue, setProperty iid name interpretedValue interp'')
-    _ -> throwRuntimeError $ runtimeError name ""
+    _ -> throwRuntimeError $ runtimeError name "Only instances have fields."
 interpretExpr interp expr@(This keyword) =
   case lookupVariable interp keyword expr of
     Right value -> return (value, interp)
@@ -201,12 +219,12 @@ getFieldOrMethod interp name inst@(VInstance _ properties methods _) =
   case properties Map.!? lexeme name of
     Just value -> return (value, interp)
     Nothing -> case methods Map.!? lexeme name of
-      Just (VFunction params leftParen fname definingInterp func) ->
-        let interpWithThis = assignThis inst definingInterp
-            method = VFunction params leftParen fname definingInterp func
-         in return (method, interpWithThis)
+      Just (VFunction params leftParen fname isInitializer definingInterp func _) ->
+        let interpWithThis = assignThis inst definingInterp interp
+            (method, interpWithMethod) = addFunction params leftParen fname isInitializer definingInterp func interpWithThis
+         in return (method, restoreRunningEnv interp interpWithMethod)
       Just _ -> error "Should not happen"
-      Nothing -> throwRuntimeError $ runtimeError name "Undefined property '" ++ lexeme name ++ "'."
+      Nothing -> throwRuntimeError $ runtimeError name $ "Undefined property '" ++ lexeme name ++ "'."
 getFieldOrMethod _ name _ = throwRuntimeError $ runtimeError name "Only instances have properties."
 
 toNumberPair :: Value -> Value -> Token -> Either String (Double, Double)

@@ -11,7 +11,7 @@ import Tokens (Token (lexeme))
 
 newtype Locals = Locals {resolverMap :: Map.Map Expr Int}
 
-data FunctionType = NONE | FUNCTION | METHOD
+data FunctionType = NONE | FUNCTION | METHOD | INITIALIZER
   deriving (Eq)
 
 data ClassType = NO_CLASS | CLASS
@@ -114,15 +114,31 @@ resolveStmt stmt@(SomeStmt (Function name _ _)) =
   resolveFunction stmt FUNCTION Nothing
     . define name
     . declare name
-resolveStmt (SomeStmt (Return keyword value)) = resolveExpr value . checkFunctionType
+resolveStmt (SomeStmt (Return keyword returnValue)) =
+  maybe id resolveExpr returnValue
+    . checkFunctionType
  where
-  checkFunctionType rt =
-    if currentFunction rt == NONE
-      then addError keyword "Can't return from top-level code." rt
-      else rt
+  checkFunctionType rt
+    | currentFunction rt == NONE = addError keyword "Can't return from top-level code." rt
+    | Just _ <- returnValue
+    , currentFunction rt == INITIALIZER =
+        addError keyword "Can't return a value from an initializer." rt
+    | otherwise = rt
 resolveStmt (SomeStmt (Class name methods)) =
   endScope
-    . (\rt -> foldl (flip (\method -> resolveFunction (SomeStmt method) METHOD $ Just CLASS)) rt methods)
+    . ( \rt ->
+          foldl
+            ( flip
+                ( \method@(Function methodName _ _) ->
+                    resolveFunction
+                      (SomeStmt method)
+                      (if lexeme methodName == "init" then INITIALIZER else METHOD)
+                      $ Just CLASS
+                )
+            )
+            rt
+            methods
+      )
     . (\rt -> rt{scopes = Map.insert "this" True (head $ scopes rt) : tail (scopes rt)})
     . beginScope
     . define name
