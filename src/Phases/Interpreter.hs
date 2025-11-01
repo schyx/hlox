@@ -344,4 +344,3 @@ fromLiteral (Tokens.Number n) = VNumber n
 fromLiteral (Tokens.Str s) = VStr s
 fromLiteral (Tokens.Boolean b) = VBoolean b
 fromLiteral Tokens.Nil = VNil
-fromLiteral _ = error "can't convert from literal"

@@ -10,12 +10,11 @@ import Numeric
 data Literal
   = Number Double
   | Str String
-  | Identifier String
   | Boolean Bool
   | Nil
   deriving (Eq, Ord)
 
-instance Show Literal where -- TODO: change literal to not include identifiers
+instance Show Literal where
   show (Number n) = formatNumber n
    where
     formatNumber :: Double -> String
@@ -24,7 +23,6 @@ instance Show Literal where -- TODO: change literal to not include identifiers
       | x == fromInteger (round x) = show (round x :: Integer)
       | otherwise = showFFloat Nothing x ""
   show (Str s) = s
-  show (Identifier _) = error "shouldn't be showing identifier"
   show (Boolean b) = if b then "true" else "false"
   show Nil = "nil"
 
