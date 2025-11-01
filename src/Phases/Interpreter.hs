@@ -92,7 +92,7 @@ defaultInterpreter localVariables =
         MkToken
           { tokenType = IDENTIFIER
           , offset = 0
-          , literal = None
+          , literal = Nothing
           , line = 0
           , lexeme = "clock"
           }

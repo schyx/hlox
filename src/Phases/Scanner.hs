@@ -46,7 +46,7 @@ scanTokens contents =
   inputLines = scannerLine . fst $ scannerData
   addResult (errs, toks) eofLine [] =
     ( reverse errs
-    , reverse $ MkToken{tokenType = EOF, offset = 1, literal = Nil, line = eofLine, lexeme = ""} : toks
+    , reverse $ MkToken{tokenType = EOF, offset = 1, literal = Nothing, line = eofLine, lexeme = ""} : toks
     )
   addResult (errs, toks) eofLine ((Left err) : others) = addResult (err : errs, toks) eofLine others
   addResult (errs, toks) eofLine ((Right tok) : others) = addResult (errs, tok : toks) eofLine others
@@ -79,9 +79,10 @@ identifierS =
     createToken
       (\string -> fromMaybe IDENTIFIER $ Map.lookup string identifierTable)
       ( \case
-          "true" -> Boolean True
-          "false" -> Boolean False
-          _ -> Nil
+          "true" -> Just . Boolean $ True
+          "false" -> Just . Boolean $ False
+          "nil" -> Just Nil
+          _ -> Nothing
       )
       id
 
@@ -93,13 +94,13 @@ stringS =
           <*> (toStringIdentifier <$ charS (== '"') <|> unterminatedString)
        )
  where
-  toStringIdentifier = createToken (const STRING) Str (\string -> "\"" ++ string ++ "\"")
+  toStringIdentifier = createToken (const STRING) (Just . Str) (\string -> "\"" ++ string ++ "\"")
   unterminatedString = makeLoxScanner $ \inData ->
     Just (inData, const (Left $ report (scannerLine inData) "" "Unterminated string."))
 
 numS :: LoxScanner (Either String Token)
 numS =
-  createToken (const NUMBER) (Number . read) id
+  createToken (const NUMBER) (Just . Number . read) id
     <$> ( ( combineThreeStrings
               <$> spanSNoEmpty isDigit
               <*> oneCharStringS (== '.')
@@ -118,7 +119,7 @@ singleCharToken = addSingleCharToken <$> charS (`elem` "(){},.-+;*!>=</")
       MkToken
         { tokenType = singleCharTokenTable Map.! c
         , offset = charOffset
-        , literal = Nil
+        , literal = Nothing
         , line = charLine
         , lexeme = [c]
         }
@@ -126,7 +127,7 @@ singleCharToken = addSingleCharToken <$> charS (`elem` "(){},.-+;*!>=</")
 twoCharToken :: LoxScanner (Either String Token)
 twoCharToken = addTwoCharToken <$> twoCharS (`elem` twoCharTokens)
  where
-  addTwoCharToken = createToken (twoCharTokenTable Map.!) (const Nil) id
+  addTwoCharToken = createToken (twoCharTokenTable Map.!) (const Nothing) id
   twoCharTokens = [('!', '='), ('=', '='), ('<', '='), ('>', '=')]
 
 comment :: LoxScanner (String, (Int, Int))
@@ -195,7 +196,7 @@ splitSNoEmpty predicate =
 
 createToken ::
   (String -> TokenType) ->
-  (String -> Literal) ->
+  (String -> Maybe Literal) ->
   (String -> String) ->
   (String, (Int, Int)) ->
   Either String Token

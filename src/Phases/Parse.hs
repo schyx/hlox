@@ -392,7 +392,7 @@ primary :: MaybeT Planter Expr
 primary = createThis <||> createLiteral <||> createGrouping <||> createVariable <||> noPrimary
  where
   createThis = This <$> match (== THIS)
-  createLiteral = Primary . literal <$> match (`elem` [FALSE, TRUE, NUMBER, STRING, NIL])
+  createLiteral = Primary . fromMaybe undefined . literal <$> match (`elem` [FALSE, TRUE, NUMBER, STRING, NIL])
   createGrouping =
     Grouping
       <$> (match (== LEFT_PAREN) *> expression <* consume RIGHT_PAREN "Expect ')' after expression.")

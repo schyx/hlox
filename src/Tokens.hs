@@ -13,7 +13,6 @@ data Literal
   | Identifier String
   | Boolean Bool
   | Nil
-  | None
   deriving (Eq, Ord)
 
 instance Show Literal where -- TODO: change literal to not include identifiers
@@ -28,12 +27,11 @@ instance Show Literal where -- TODO: change literal to not include identifiers
   show (Identifier _) = error "shouldn't be showing identifier"
   show (Boolean b) = if b then "true" else "false"
   show Nil = "nil"
-  show None = error "shouldn't be showing none"
 
 data Token = MkToken
   { tokenType :: TokenType
   , lexeme :: String
-  , literal :: Literal -- TODO: make this Maybe Literal (and get rid of None)
+  , literal :: Maybe Literal
   , line :: Int
   , offset :: Int
   }
