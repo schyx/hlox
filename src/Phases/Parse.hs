@@ -349,44 +349,27 @@ unary = (Unary <$> match (`elem` [MINUS, BANG]) <*> unary) <||> call
 call :: MaybeT Planter Expr
 call = callOrGet <||> primary
  where
-  -- TODO: refactor this maybe?
   callOrGet = do
     callee <- primary
     callOrGetLoop callee
   callOrGetLoop callee =
-    ( do
-        leftParen <- match (== LEFT_PAREN)
-        leftCall <- Call callee leftParen <$> finishCall
-        callLoop <- callHelper leftCall
-        callOrGetLoop callLoop
-    )
-      <||> ( do
-              _ <- match (== DOT)
-              name <- consume IDENTIFIER "Expect property name after '.'."
-              callOrGetLoop $ Get callee name
+    ((Call callee <$> match (== LEFT_PAREN) <*> finishCall) >>= callOrGetLoop)
+      <||> ( (match (== DOT) *> consume IDENTIFIER "Expect property name after '.'.")
+              >>= callOrGetLoop . Get callee
            )
       <||> return callee
-  callHelper leftCall =
-    ( do
-        newLeftParen <- match (== LEFT_PAREN)
-        newCall <- Call leftCall newLeftParen <$> finishCall
-        callHelper newCall
-    )
-      <||> pure leftCall
-  finishCall = getArgs <||> (consume RIGHT_PAREN "Expect ')' after arguments." >> pure [])
-  getArgs = do
-    _ <- check (/= RIGHT_PAREN)
-    argsHelper []
-  argsHelper buildup =
-    do
-      when (length buildup >= 255) $ do
-        first <- getFirst
-        let tooManyArgsMsg = parseError first "Can't have more than 255 arguments."
-        addNonBlockingParseError tooManyArgsMsg
-      arg <- expression
-      let newBuildup = arg : buildup
-      (match (== COMMA) >> argsHelper newBuildup)
-        <||> (consume RIGHT_PAREN "Expect ')' after arguments." >> return (reverse newBuildup))
+  finishCall =
+    (check (/= RIGHT_PAREN) >> argsHelper [])
+      <||> (consume RIGHT_PAREN "Expect ')' after arguments." >> pure [])
+  argsHelper buildup = do
+    when (length buildup >= 255) $ do
+      first <- getFirst
+      let tooManyArgsMsg = parseError first "Can't have more than 255 arguments."
+      addNonBlockingParseError tooManyArgsMsg
+    arg <- expression
+    let newBuildup = arg : buildup
+    (match (== COMMA) >> argsHelper newBuildup)
+      <||> (consume RIGHT_PAREN "Expect ')' after arguments." >> return (reverse newBuildup))
 
 primary :: MaybeT Planter Expr
 primary = createThis <||> createLiteral <||> createGrouping <||> createVariable <||> noPrimary
