@@ -6,12 +6,16 @@ module Phases.Parse (parse, TreeResult, expressionWrapper) where
 import Control.Applicative (Alternative (many), (<|>))
 import Control.Monad (when)
 import Control.Monad.Trans.Maybe (MaybeT (MaybeT, runMaybeT))
+import Data.Functor (($>))
 import Data.Maybe (fromMaybe, isNothing)
 import Error (parseError)
 import Parser (Parser (Parser, runParser))
 import Phases.Expr
 import Phases.Stmt
 import Tokens
+
+maxArgNumber :: Int
+maxArgNumber = 255
 
 type TreeResult = Either [String] [SomeStmt]
 
@@ -112,20 +116,15 @@ declaration =
     <||> statement
 
 classDeclaration :: MaybeT Planter (Stmt KClass)
-classDeclaration = do
-  _ <- match (== CLASS)
-  className <- consume IDENTIFIER "Expect class name."
-  _ <- consume LEFT_BRACE "Expect '{' before class body."
-  methods <- parseMethods
-  _ <- consume RIGHT_BRACE "Expect '}' after class body."
-  return $ Class className methods
+classDeclaration =
+  Class
+    <$> (match (== CLASS) *> consume IDENTIFIER "Expect class name." <* consume LEFT_BRACE "Expect '{' before class body.")
+    <*> (parseMethods <* consume RIGHT_BRACE "Expect '}' after class body.")
  where
   parseMethods = many $ createCallable "method"
 
 functionDeclaration :: MaybeT Planter (Stmt KFunction)
-functionDeclaration = do
-  _ <- match (== FUN)
-  createCallable "function"
+functionDeclaration = match (== FUN) *> createCallable "function"
 
 createCallable :: String -> MaybeT Planter (Stmt KFunction)
 createCallable callableType = do
@@ -141,17 +140,15 @@ createCallable callableType = do
  where
   getParams = addParam [] <||> endParamList []
   addParam buildup = do
-    when (length buildup >= 255) $ do
+    when (length buildup >= maxArgNumber) $ do
       first <- getFirst
-      let tooManyParamsMsg = parseError first "Can't have more than 255 parameters."
+      let tooManyParamsMsg = parseError first ("Can't have more than " ++ show maxArgNumber ++ " parameters.")
       addNonBlockingParseError tooManyParamsMsg
     param <- match (== IDENTIFIER)
     let newBuildup = param : buildup
     (match (== COMMA) >> addParam newBuildup)
       <||> endParamList newBuildup
-  endParamList buildup = do
-    _ <- consume RIGHT_PAREN "Expect ')' after parameters."
-    return $ reverse buildup
+  endParamList buildup = consume RIGHT_PAREN "Expect ')' after parameters." $> reverse buildup
   matchMaybeT predicate = MaybeT $ makePlanter $ \(inErrs, toks) ->
     let t1 = head toks
         rest = tail toks
@@ -162,25 +159,16 @@ createCallable callableType = do
 
 varDeclaration :: MaybeT Planter (Stmt KVar)
 varDeclaration = do
-  _ <- match (== VAR)
-  varName <- consume IDENTIFIER "Expect variable name."
+  varName <- match (== VAR) *> consume IDENTIFIER "Expect variable name."
   assignVal varName
     <||> noVal varName
     <||> unexpectedToken
  where
-  assignVal varName = do
-    _ <- match (== EQUAL)
-    expr <- expression
-    _ <- consume SEMICOLON "Expect ';' after variable declaration."
-    return $ Var varName expr
-  noVal varName = do
-    _ <- match (== SEMICOLON)
-    return $ Var varName $ Primary Nil
+  assignVal varName =
+    Var varName <$> (match (== EQUAL) *> expression <* consume SEMICOLON "Expect ';' after variable declaration.")
+  noVal varName = Var varName <$> (match (== SEMICOLON) $> Primary Nil)
   unexpectedToken =
-    ( parseError
-        <$> match (const True)
-        <*> pure "Expect ';' after variable declaration."
-    )
+    (parseError <$> match (const True) <*> pure "Expect ';' after variable declaration.")
       >>= addParseError
 
 statement :: MaybeT Planter SomeStmt
@@ -237,55 +225,34 @@ ifStatement = do
   getElseBranch = (match (== ELSE) >> (Just <$> statement)) <||> pure Nothing
 
 printStatement :: MaybeT Planter (Stmt KPrint)
-printStatement = do
-  _ <- match (== PRINT)
-  expr <- expression
-  _ <- consume SEMICOLON "Expect ';' after expression."
-  return $ Print expr
+printStatement = Print <$> (match (== PRINT) *> expression <* consume SEMICOLON "Expect ';' after expression.")
 
 returnStatement :: MaybeT Planter (Stmt KReturn)
-returnStatement = do
-  returnToken <- match (== RETURN)
-  emptyReturn returnToken <||> hasExprReturn returnToken
+returnStatement = (match (== RETURN) >>= emptyReturn) <||> (match (== RETURN) >>= hasExprReturn)
  where
-  emptyReturn returnToken = do
-    _ <- match (== SEMICOLON)
-    return $ Return returnToken Nothing
-  hasExprReturn returnToken = do
-    expr <- expression
-    _ <- consume SEMICOLON "Expect ';' after return value."
-    return $ Return returnToken $ Just expr
+  emptyReturn returnToken = Return returnToken <$> (match (== SEMICOLON) $> Nothing)
+  hasExprReturn returnToken = Return returnToken . Just <$> (expression <* consume SEMICOLON "Expect ';' after return value.")
 
 whileStatement :: MaybeT Planter (Stmt KWhile)
-whileStatement = do
-  _ <- match (== WHILE)
-  _ <- consume LEFT_PAREN "Expect '(' after while."
-  expr <- expression
-  _ <- consume RIGHT_PAREN "Expect ')' after condition."
-  While expr <$> statement
+whileStatement =
+  While
+    <$> (match (== WHILE) *> consume LEFT_PAREN "Expect '(' after while." *> expression)
+    <*> (consume RIGHT_PAREN "Expect ')' after condition." *> statement)
 
 blockStatement :: MaybeT Planter (Stmt KBlock)
-blockStatement = do
-  _ <- match (== LEFT_BRACE)
-  Block <$> buildBlock []
+blockStatement = Block <$> (match (== LEFT_BRACE) *> buildBlock [])
 
 buildBlock :: [SomeStmt] -> MaybeT Planter [SomeStmt]
 buildBlock buildup = rightBrace <||> endOfFile <||> moreStmts
  where
-  rightBrace = match (== RIGHT_BRACE) >> return (reverse buildup)
-  endOfFile = do
-    eofToken <- check (== EOF)
-    addParseError $ parseError eofToken "Expect '}' after block."
-  moreStmts = do
-    stmt <- declaration
-    buildBlock $ stmt : buildup
+  rightBrace = match (== RIGHT_BRACE) $> reverse buildup
+  endOfFile = check (== EOF) >>= addParseError . flip parseError "Expect '}' after block."
+  moreStmts = declaration >>= buildBlock . (: buildup)
 
 expressionStatement :: MaybeT Planter (Stmt KExpression)
-expressionStatement = do
-  _ <- check (/= EOF)
-  expr <- expression
-  _ <- consume SEMICOLON "Expect ';' after expression."
-  return $ Expression expr
+expressionStatement =
+  Expression
+    <$> (check (/= EOF) *> expression <* consume SEMICOLON "Expect ';' after expression.")
 
 expression :: MaybeT Planter Expr
 expression = assignment
@@ -362,9 +329,9 @@ call = callOrGet <||> primary
     (check (/= RIGHT_PAREN) >> argsHelper [])
       <||> (consume RIGHT_PAREN "Expect ')' after arguments." >> pure [])
   argsHelper buildup = do
-    when (length buildup >= 255) $ do
+    when (length buildup >= maxArgNumber) $ do
       first <- getFirst
-      let tooManyArgsMsg = parseError first "Can't have more than 255 arguments."
+      let tooManyArgsMsg = parseError first ("Can't have more than " ++ show maxArgNumber ++ " arguments.")
       addNonBlockingParseError tooManyArgsMsg
     arg <- expression
     let newBuildup = arg : buildup
@@ -376,8 +343,6 @@ primary = createThis <||> createLiteral <||> createGrouping <||> createVariable 
  where
   createThis = This <$> match (== THIS)
   createLiteral = Primary . fromMaybe undefined . literal <$> match (`elem` [FALSE, TRUE, NUMBER, STRING, NIL])
-  createGrouping =
-    Grouping
-      <$> (match (== LEFT_PAREN) *> expression <* consume RIGHT_PAREN "Expect ')' after expression.")
+  createGrouping = Grouping <$> (match (== LEFT_PAREN) *> expression <* consume RIGHT_PAREN "Expect ')' after expression.")
   createVariable = Variable <$> match (== IDENTIFIER)
   noPrimary = parseError <$> match (const True) <*> pure "Expect expression." >>= addParseError
