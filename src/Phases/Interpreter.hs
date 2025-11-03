@@ -1,4 +1,6 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE KindSignatures #-}
 
 module Phases.Interpreter (
   Interpreter (Interpreter),
@@ -18,6 +20,8 @@ module Phases.Interpreter (
   restoreRunningEnv,
   newInstance,
   setProperty,
+  ValueKind (..),
+  SomeValue (..),
   Value (..),
 ) where
 
@@ -42,7 +46,7 @@ data Interpreter = Interpreter
   }
   deriving (Show)
 
-data Environment = Environment (Map.Map String Value) (Maybe EnvID)
+data Environment = Environment (Map.Map String SomeValue) (Maybe EnvID)
   deriving (Show)
 
 newtype EnvID = EnvID Int
@@ -69,9 +73,9 @@ addFunction ::
   String ->
   Bool ->
   Interpreter ->
-  (Interpreter -> [Value] -> ExceptT String IO (Value, Interpreter)) ->
+  (Interpreter -> [SomeValue] -> ExceptT String IO (SomeValue, Interpreter)) ->
   Interpreter ->
-  (Value, Interpreter)
+  (Value 'ValueFunction, Interpreter)
 addFunction params leftParen fname isInitializer definingInterp func interpreter =
   let fc = (getFuncCounter . funcCounter $ interpreter)
    in case fc Map.!? (params, leftParen, fname, isInitializer) of
@@ -98,9 +102,9 @@ defaultInterpreter localVariables =
           }
       clockFunc interp _ = do
         time <- liftIO getPOSIXTime
-        return (VNumber (realToFrac time :: Double), interp)
+        return (SomeValue $ VNumber (realToFrac time :: Double), interp)
       clock = VFunction [] clockToken "<native fn>" False undefined clockFunc (FunctionID 0)
-      globalEnv = Environment (Map.fromList [("clock", clock)]) Nothing
+      globalEnv = Environment (Map.fromList [("clock", SomeValue clock)]) Nothing
       table = Map.fromList [(EnvID 0, globalEnv)]
    in Interpreter table (resolverMap localVariables) (EnvID 0) (EnvID 0) (InstanceID 0) (FuncCounter Map.empty)
 
@@ -122,7 +126,7 @@ changeToParent interpreter =
         Just parentEnvironmentId -> interpreter{currentEnvironment = parentEnvironmentId}
         Nothing -> error "can't change to parent when no parent"
 
-define :: Interpreter -> Token -> Value -> Interpreter
+define :: Interpreter -> Token -> SomeValue -> Interpreter
 define interpreter token value =
   let Environment envTable parent = environmentTable interpreter Map.! currentEnvironment interpreter
    in let definedTable = Map.insert (lexeme token) value envTable
@@ -135,7 +139,7 @@ define interpreter token value =
                   (environmentTable interpreter)
             }
 
-assignTok :: Interpreter -> Token -> Value -> Either String Interpreter
+assignTok :: Interpreter -> Token -> SomeValue -> Either String Interpreter
 assignTok interpreter token value =
   case environmentTable interpreter Map.! currentEnvironment interpreter of
     (Environment envTable parent)
@@ -156,22 +160,22 @@ assignTok interpreter token value =
       | Nothing <- parent ->
           Left $ runtimeError token $ "Undefined variable '" ++ lexeme token ++ "'."
 
-assignThis :: Value -> Interpreter -> Interpreter -> Interpreter
+assignThis :: Value 'ValueInstance -> Interpreter -> Interpreter -> Interpreter
 assignThis value (Interpreter _ _ thisInterp _ _ _) interpreter =
   let Environment variables parent = case environmentTable interpreter Map.!? thisInterp of
         Nothing -> error "here"
         Just e -> e
-      env = Environment (Map.insert "this" value variables) parent
+      env = Environment (Map.insert "this" (SomeValue value) variables) parent
    in interpreter{environmentTable = Map.insert thisInterp env $ environmentTable interpreter}
 
-assign :: Interpreter -> Expr -> Value -> Either String Interpreter
+assign :: Interpreter -> Expr -> SomeValue -> Either String Interpreter
 assign interpreter expr@(Assign name _) value =
   case locals interpreter Map.!? expr of
     Nothing -> assignGlobal interpreter name value
     Just distance -> assignAt interpreter distance name value
 assign _ _ _ = error ""
 
-assignAt :: Interpreter -> Int -> Token -> Value -> Either String Interpreter
+assignAt :: Interpreter -> Int -> Token -> SomeValue -> Either String Interpreter
 assignAt interpreter distance name val =
   let ancestorId = ancestor distance interpreter $ currentEnvironment interpreter
       Environment envTable parent = fromMaybe (error "in assignAt") (environmentTable interpreter Map.!? ancestorId)
@@ -182,7 +186,7 @@ assignAt interpreter distance name val =
           (environmentTable interpreter)
    in Right interpreter{environmentTable = newTable}
 
-assignGlobal :: Interpreter -> Token -> Value -> Either String Interpreter
+assignGlobal :: Interpreter -> Token -> SomeValue -> Either String Interpreter
 assignGlobal interpreter token value =
   let Environment globalTable pEnv = environmentTable interpreter Map.! EnvID 0
       newGlobalEnv = Environment (Map.insert (lexeme token) value globalTable) pEnv
@@ -194,7 +198,7 @@ assignGlobal interpreter token value =
               }
         Nothing -> Left $ runtimeError token $ "Undefined variable '" ++ lexeme token ++ "'."
 
-lookupVariable :: Interpreter -> Token -> Expr -> Either String Value
+lookupVariable :: Interpreter -> Token -> Expr -> Either String SomeValue
 lookupVariable interpreter name expr =
   case locals interpreter Map.!? expr of
     Nothing ->
@@ -204,7 +208,7 @@ lookupVariable interpreter name expr =
             Just val -> Right val
     Just distance -> Right $ getAt interpreter distance $ lexeme name
 
-getAt :: Interpreter -> Int -> String -> Value
+getAt :: Interpreter -> Int -> String -> SomeValue
 getAt interpreter distance name =
   let Environment envTable _ =
         fromMaybe
@@ -223,7 +227,7 @@ getAt interpreter distance name =
               ++ show interpreter
         Just val -> val
 
-get :: Interpreter -> Token -> Either String Value
+get :: Interpreter -> Token -> Either String SomeValue
 get interpreter token =
   let Environment envTable parent = environmentTable interpreter Map.! currentEnvironment interpreter
    in case envTable Map.!? lexeme token of
@@ -247,35 +251,64 @@ restoreRunningEnv interpreter = setRunningEnv $ currentEnvironment interpreter
 setRunningEnv :: EnvID -> Interpreter -> Interpreter
 setRunningEnv envId interpreter = interpreter{currentEnvironment = envId}
 
-newInstance :: String -> Map.Map String Value -> Interpreter -> (Value, Interpreter)
+newInstance :: String -> Map.Map String (Value 'ValueFunction) -> Interpreter -> (Value 'ValueInstance, Interpreter)
 newInstance className classMethods interpreter =
   let iid = nextInstanceId interpreter
    in ( VInstance className Map.empty classMethods iid
       , interpreter{nextInstanceId = incrementInstanceId iid}
       )
 
-setProperty :: InstanceID -> Token -> Value -> Interpreter -> Interpreter
+setProperty :: InstanceID -> Token -> SomeValue -> Interpreter -> Interpreter
 setProperty iid name val interpreter =
-  let mapFunc (VInstance className properties methods otherIid) =
+  let mapFunc (SomeValue (VInstance className properties methods otherIid)) =
         if iid == otherIid
-          then VInstance className (Map.insert (lexeme name) val properties) methods otherIid
-          else VInstance className (Map.map mapFunc properties) methods otherIid
+          then SomeValue $ VInstance className (Map.insert (lexeme name) val properties) methods otherIid
+          else SomeValue $ VInstance className (Map.map mapFunc properties) methods otherIid
       mapFunc other = other
       envMap (Environment vars pID) = Environment (Map.map mapFunc vars) pID
    in interpreter{environmentTable = Map.map envMap $ environmentTable interpreter}
 
--- TODO: use DataKinds to make instances contain methods
-data Value
-  = VNumber Double
-  | VStr String
-  | VBoolean Bool
-  | VNil
-  | VCall Int Token String
-  | VFunction [Token] Token String Bool Interpreter (Interpreter -> [Value] -> ExceptT String IO (Value, Interpreter)) FunctionID
-  | VClass String Int (Map.Map String Value)
-  | VInstance String (Map.Map String Value) (Map.Map String Value) InstanceID
+-- TODO: use DataKinds in Expr
+data ValueKind
+  = ValueNumber
+  | ValueStr
+  | ValueBoolean
+  | ValueNil
+  | ValueCall
+  | ValueFunction
+  | ValueClass
+  | ValueInstance
+  deriving (Eq, Show)
 
-instance Eq Value where
+data SomeValue where
+  SomeValue :: Value k -> SomeValue
+
+instance Show SomeValue where
+  show (SomeValue v) = show v
+
+instance Eq SomeValue where
+  SomeValue (VNumber n1) == SomeValue (VNumber n2) = n1 == n2
+  SomeValue (VStr s1) == SomeValue (VStr s2) = s1 == s2
+  SomeValue (VBoolean b1) == SomeValue (VBoolean b2) = b1 == b2
+  SomeValue VNil == SomeValue VNil = True
+  SomeValue (VCall arity1 tok1 name1) == SomeValue (VCall arity2 tok2 name2) = arity1 == arity2 && tok1 == tok2 && name1 == name2
+  SomeValue (VFunction params1 callee1 name1 isInit1 _ _ fid1) == SomeValue (VFunction params2 callee2 name2 isInit2 _ _ fid2) =
+    params1 == params2 && callee1 == callee2 && name1 == name2 && isInit1 == isInit2 && fid1 == fid2
+  SomeValue (VClass name1 _ _) == SomeValue (VClass name2 _ _) = name1 == name2
+  SomeValue (VInstance _ _ _ iid1) == SomeValue (VInstance _ _ _ iid2) = iid1 == iid2
+  _ == _ = False
+
+data Value (k :: ValueKind) where
+  VNumber :: Double -> Value 'ValueNumber
+  VStr :: String -> Value 'ValueStr
+  VBoolean :: Bool -> Value 'ValueBoolean
+  VNil :: Value 'ValueNil
+  VCall :: Int -> Token -> String -> Value 'ValueCall
+  VFunction :: [Token] -> Token -> String -> Bool -> Interpreter -> (Interpreter -> [SomeValue] -> ExceptT String IO (SomeValue, Interpreter)) -> FunctionID -> Value 'ValueFunction
+  VClass :: String -> Int -> (Map.Map String (Value 'ValueFunction)) -> Value 'ValueClass
+  VInstance :: String -> (Map.Map String SomeValue) -> (Map.Map String (Value 'ValueFunction)) -> InstanceID -> Value 'ValueInstance
+
+instance Eq (Value k) where
   (VNumber n1) == (VNumber n2) = n1 == n2
   (VStr s1) == (VStr s2) = s1 == s2
   (VBoolean b1) == (VBoolean b2) = b1 == b2
@@ -285,45 +318,19 @@ instance Eq Value where
     params1 == params2 && callee1 == callee2 && name1 == name2 && isInit1 == isInit2 && fid1 == fid2
   (VClass name1 _ _) == (VClass name2 _ _) = name1 == name2
   (VInstance _ _ _ iid1) == (VInstance _ _ _ iid2) = iid1 == iid2
-  _ == _ = False
 
-instance Ord Value where
+instance Ord (Value k) where
   compare (VNumber n1) (VNumber n2) = compare n1 n2
-  compare (VNumber _) _ = LT
   compare (VStr s1) (VStr s2) = compare s1 s2
-  compare (VStr _) other = case other of
-    VNumber _ -> GT
-    _ -> LT
   compare (VBoolean b1) (VBoolean b2) = compare b1 b2
-  compare (VBoolean _) other = case other of
-    VNumber _ -> GT
-    VStr _ -> GT
-    _ -> LT
   compare VNil VNil = EQ
-  compare VNil other = case other of
-    VNumber _ -> GT
-    VStr _ -> GT
-    VBoolean _ -> GT
-    _ -> LT
   compare (VCall arity1 tok1 name1) (VCall arity2 tok2 name2) = compare (arity1, tok1, name1) (arity2, tok2, name2)
-  compare VCall{} other = case other of
-    VFunction{} -> LT
-    VClass{} -> LT
-    _ -> GT
   compare (VFunction params1 callee1 name1 isInit1 _ _ fid1) (VFunction params2 callee2 name2 isInit2 _ _ fid2) =
     compare (params1, callee1, name1, isInit1, fid1) (params2, callee2, name2, isInit2, fid2)
-  compare VFunction{} other = case other of
-    VClass{} -> LT
-    VInstance{} -> LT
-    _ -> GT
   compare (VClass name1 _ _) (VClass name2 _ _) = compare name1 name2
-  compare VClass{} other = case other of
-    VInstance{} -> LT
-    _ -> GT
   compare (VInstance _ _ _ iid1) (VInstance _ _ _ iid2) = compare iid1 iid2
-  compare VInstance{} _ = GT
 
-instance Show Value where -- TODO: change literal to not include identifiers
+instance Show (Value k) where -- TODO: change literal to not include identifiers
   show (VNumber n) = formatNumber n
    where
     formatNumber :: Double -> String
@@ -339,8 +346,8 @@ instance Show Value where -- TODO: change literal to not include identifiers
   show (VClass name _ _) = name
   show (VInstance name _ _ _) = name ++ " instance"
 
-fromLiteral :: Literal -> Value
-fromLiteral (Tokens.Number n) = VNumber n
-fromLiteral (Tokens.Str s) = VStr s
-fromLiteral (Tokens.Boolean b) = VBoolean b
-fromLiteral Tokens.Nil = VNil
+fromLiteral :: Literal -> SomeValue
+fromLiteral (Tokens.Number n) = SomeValue $ VNumber n
+fromLiteral (Tokens.Str s) = SomeValue $ VStr s
+fromLiteral (Tokens.Boolean b) = SomeValue $ VBoolean b
+fromLiteral Tokens.Nil = SomeValue VNil

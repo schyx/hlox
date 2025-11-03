@@ -1,3 +1,4 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE GADTs #-}
 
 module Phases.Interpret (interpret, InterpretOutput, interpretExpr) where
@@ -13,7 +14,7 @@ import Phases.Interpreter
 import Phases.Stmt
 import Tokens
 
-type InterpretOutput a = ExceptT (Value, Interpreter) (ExceptT String IO) a
+type InterpretOutput a = ExceptT (SomeValue, Interpreter) (ExceptT String IO) a
 
 throwRuntimeError :: String -> InterpretOutput a
 throwRuntimeError = lift . throwError
@@ -46,31 +47,30 @@ interpret interp (SomeStmt (While condition whileBlock)) = do
       interp'' <- interpret interp' whileBlock
       interpret interp'' (SomeStmt (While condition whileBlock))
     else return interp'
-interpret interp func@(SomeStmt (Function fname _ _)) =
+interpret interp (SomeStmt func@(Function fname _ _)) =
   let (funcObj, interp') = functionToValue interp False func
-   in return $ define interp' fname funcObj
+   in return $ define interp' fname $ SomeValue funcObj
 interpret interp (SomeStmt (Return _ returnValue)) =
   case returnValue of
-    Nothing -> throwError (VNil, interp)
+    Nothing -> throwError (SomeValue VNil, interp)
     Just value -> do
       (val, interp') <- interpretExpr interp value
       throwError (val, interp')
 interpret interp (SomeStmt (Class name classMethods)) =
-  let interp' = define interp name VNil
+  let interp' = define interp name $ SomeValue VNil
       foldFunc func@(Function fname _ _) =
-        Map.insert (lexeme fname) (fst $ functionToValue (createChildEnv interp) (lexeme fname == "init") (SomeStmt func))
+        Map.insert (lexeme fname) (fst $ functionToValue (createChildEnv interp) (lexeme fname == "init") func)
       methods = foldr foldFunc Map.empty classMethods
       arity = case methods Map.!? "init" of
         Nothing -> 0
         Just (VFunction args _ _ _ _ _ _) -> length args
-        Just _ -> error "bruh"
-      klass = VClass (lexeme name) arity methods
+      klass = SomeValue $ VClass (lexeme name) arity methods
    in case assignTok interp' name klass of
         Right interp'' -> return (restoreRunningEnv interp'' $ createChildEnv interp'')
         Left err -> throwRuntimeError err
 
-functionToValue :: Interpreter -> Bool -> SomeStmt -> (Value, Interpreter)
-functionToValue interp isInitializer (SomeStmt (Function fname params body)) =
+functionToValue :: Interpreter -> Bool -> Stmt 'KFunction -> (Value 'ValueFunction, Interpreter)
+functionToValue interp isInitializer (Function fname params body) =
   let functionF interpreter args = do
         let enclosingInterp = restoreRunningEnv interp interpreter
         let fInterpInitial = createChildEnv enclosingInterp
@@ -78,32 +78,30 @@ functionToValue interp isInitializer (SomeStmt (Function fname params body)) =
         run <- runExceptT $ execBlock fInterp body
         case run of
           Left (val, outputInterp) -> ExceptT $ return $ Right (val, outputInterp)
-          Right outputInterp -> ExceptT $ return $ Right (VNil, outputInterp)
+          Right outputInterp -> ExceptT $ return $ Right (SomeValue VNil, outputInterp)
    in addFunction params fname ("<fn " ++ lexeme fname ++ ">") isInitializer interp functionF interp
-functionToValue _ _ _ = error "Called this in the wrong place"
 
 execBlock :: Interpreter -> [SomeStmt] -> InterpretOutput Interpreter
 execBlock = foldM interpret
 
-interpretExpr :: Interpreter -> Expr -> InterpretOutput (Value, Interpreter)
+interpretExpr :: Interpreter -> Expr -> InterpretOutput (SomeValue, Interpreter)
 interpretExpr interp (Call callee paren argExprs) = do
   (val, callerInterp) <- interpretExpr interp callee
   (args, argsInterp) <- interpretExprs callerInterp argExprs
   case val of
-    function@VFunction{} -> callFunction argsInterp args function
-    (VClass className _ classMethods) ->
+    (SomeValue function@VFunction{}) -> callFunction argsInterp args function
+    (SomeValue (VClass className _ classMethods)) ->
       let (inst, instInterp) = newInstance className classMethods argsInterp
        in case classMethods Map.!? "init" of
             Nothing ->
               if null args
-                then return (inst, instInterp)
+                then return (SomeValue inst, instInterp)
                 else throwRuntimeError $ runtimeError paren $ "Expected 0 arguments but got " ++ show (length args) ++ "."
             Just initializer@(VFunction _ _ _ _ funcInterp _ _) ->
               callFunction (assignThis inst funcInterp instInterp) args initializer
-            Just _ -> error "buhhhhh"
     _ -> throwRuntimeError $ runtimeError paren "Can only call functions and classes."
  where
-  callFunction :: Interpreter -> [Value] -> Value -> InterpretOutput (Value, Interpreter)
+  callFunction :: Interpreter -> [SomeValue] -> Value 'ValueFunction -> InterpretOutput (SomeValue, Interpreter)
   callFunction callInterp args (VFunction params _ _ isInitializer _ func _) =
     if length params == length args
       then do
@@ -119,8 +117,7 @@ interpretExpr interp (Call callee paren argExprs) = do
           $ runtimeError
             paren
           $ "Expected " ++ show (length params) ++ " arguments but got " ++ show (length args) ++ "."
-  callFunction _ _ _ = error "calling wrong"
-  interpretExprs :: Interpreter -> [Expr] -> InterpretOutput ([Value], Interpreter)
+  interpretExprs :: Interpreter -> [Expr] -> InterpretOutput ([SomeValue], Interpreter)
   interpretExprs argsInterp [] = return ([], argsInterp)
   interpretExprs argsInterp (expr : exprs) = do
     (val, interp') <- interpretExpr argsInterp expr
@@ -137,29 +134,30 @@ interpretExpr interp (Binary left operator right) = do
   output <- getOutput leftVal rightVal
   return (output, afterRightInterp)
  where
-  getOutput :: Value -> Value -> InterpretOutput Value
+  getOutput :: SomeValue -> SomeValue -> InterpretOutput SomeValue
   getOutput leftVal rightVal
     | tokenType operator `elem` [BANG_EQUAL, EQUAL_EQUAL] =
         return $
-          VBoolean
-            ( if tokenType operator == EQUAL_EQUAL
-                then leftVal == rightVal
-                else leftVal /= rightVal
-            )
+          SomeValue $
+            VBoolean
+              ( if tokenType operator == EQUAL_EQUAL
+                  then leftVal == rightVal
+                  else leftVal /= rightVal
+              )
     | tokenType operator == PLUS = case toNumberPair leftVal rightVal operator of
-        Right (leftn, rightn) -> return $ VNumber $ leftn + rightn
+        Right (leftn, rightn) -> return $ SomeValue $ VNumber $ leftn + rightn
         Left _ -> case (leftVal, rightVal) of
-          (VStr lefts, VStr rights) -> return $ VStr $ lefts ++ rights
+          (SomeValue (VStr lefts), SomeValue (VStr rights)) -> return $ SomeValue $ VStr $ lefts ++ rights
           _ -> throwRuntimeError $ runtimeError operator "Operands must be two numbers or two strings."
     | Map.member (tokenType operator) numericBinaryTable =
         case toNumberPair leftVal rightVal operator of
           Right (leftn, rightn) ->
-            return $ VNumber $ (numericBinaryTable Map.! tokenType operator) leftn rightn
+            return $ SomeValue $ VNumber $ (numericBinaryTable Map.! tokenType operator) leftn rightn
           Left err -> throwRuntimeError err
     | Map.member (tokenType operator) booleanBinaryTable =
         case toNumberPair leftVal rightVal operator of
           Right (leftn, rightn) ->
-            return $ VBoolean $ (booleanBinaryTable Map.! tokenType operator) leftn rightn
+            return $ SomeValue $ VBoolean $ (booleanBinaryTable Map.! tokenType operator) leftn rightn
           Left err -> throwRuntimeError err
     | otherwise = error "Unexpected opType when interpreting binary"
   booleanBinaryTable =
@@ -178,9 +176,9 @@ interpretExpr interp (Binary left operator right) = do
 interpretExpr interp (Unary operator expr) = do
   (val, interp') <- interpretExpr interp expr
   case tokenType operator of
-    BANG -> return (VBoolean $ not $ isTruthy val, interp')
+    BANG -> return (SomeValue $ VBoolean $ not $ isTruthy val, interp')
     MINUS -> case toNumber val operator of
-      Right n -> return (VNumber $ -n, interp')
+      Right n -> return (SomeValue $ VNumber $ -n, interp')
       Left err -> throwRuntimeError err
     _ -> error "unexpected opType when interpreting unary"
 interpretExpr interp (Grouping expr) = interpretExpr interp expr
@@ -205,7 +203,7 @@ interpretExpr interp (Get object name) = do
 interpretExpr interp (Set object name value) = do
   (interpretedObject, interp') <- interpretExpr interp object
   case interpretedObject of
-    VInstance _ _ _ iid -> do
+    SomeValue (VInstance _ _ _ iid) -> do
       (interpretedValue, interp'') <- interpretExpr interp' value
       return (interpretedValue, setProperty iid name interpretedValue interp'')
     _ -> throwRuntimeError $ runtimeError name "Only instances have fields."
@@ -214,29 +212,28 @@ interpretExpr interp expr@(This keyword) =
     Right value -> return (value, interp)
     Left err -> throwRuntimeError err
 
-getFieldOrMethod :: Interpreter -> Token -> Value -> InterpretOutput (Value, Interpreter)
-getFieldOrMethod interp name inst@(VInstance _ properties methods _) =
+getFieldOrMethod :: Interpreter -> Token -> SomeValue -> InterpretOutput (SomeValue, Interpreter)
+getFieldOrMethod interp name (SomeValue inst@(VInstance _ properties methods _)) =
   case properties Map.!? lexeme name of
     Just value -> return (value, interp)
     Nothing -> case methods Map.!? lexeme name of
       Just (VFunction params leftParen fname isInitializer definingInterp func _) ->
         let interpWithThis = assignThis inst definingInterp interp
             (method, interpWithMethod) = addFunction params leftParen fname isInitializer definingInterp func interpWithThis
-         in return (method, restoreRunningEnv interp interpWithMethod)
-      Just _ -> error "Should not happen"
+         in return (SomeValue method, restoreRunningEnv interp interpWithMethod)
       Nothing -> throwRuntimeError $ runtimeError name $ "Undefined property '" ++ lexeme name ++ "'."
 getFieldOrMethod _ name _ = throwRuntimeError $ runtimeError name "Only instances have properties."
 
-toNumberPair :: Value -> Value -> Token -> Either String (Double, Double)
+toNumberPair :: SomeValue -> SomeValue -> Token -> Either String (Double, Double)
 toNumberPair left right op = case (toNumber left op, toNumber right op) of
   (Right l, Right r) -> Right (l, r)
   _ -> Left $ runtimeError op "Operands must be numbers."
 
-toNumber :: Value -> Token -> Either String Double
-toNumber (VNumber n) _ = Right n
+toNumber :: SomeValue -> Token -> Either String Double
+toNumber (SomeValue (VNumber n)) _ = Right n
 toNumber _ token = Left $ runtimeError token "Operand must be a number."
 
-isTruthy :: Value -> Bool
-isTruthy VNil = False
-isTruthy (VBoolean b) = b
+isTruthy :: SomeValue -> Bool
+isTruthy (SomeValue VNil) = False
+isTruthy (SomeValue (VBoolean b)) = b
 isTruthy _ = True
