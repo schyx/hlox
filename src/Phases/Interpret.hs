@@ -74,7 +74,7 @@ functionToValue interp isInitializer (Function fname params body) =
   let functionF interpreter args = do
         let enclosingInterp = restoreRunningEnv interp interpreter
         let fInterpInitial = createChildEnv enclosingInterp
-        let fInterp = foldr (\(tok, val) prevInterp -> define prevInterp tok val) fInterpInitial (zip params args) -- TODO: maybe this needs to be foldl?
+        let fInterp = foldl (\prevInterp (tok, val) -> define prevInterp tok val) fInterpInitial (zip params args)
         run <- runExceptT $ execBlock fInterp body
         case run of
           Left (val, outputInterp) -> ExceptT $ return $ Right (val, outputInterp)
