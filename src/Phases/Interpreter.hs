@@ -168,12 +168,11 @@ assignThis value (Interpreter _ _ thisInterp _ _ _) interpreter =
       env = Environment (Map.insert "this" (SomeValue value) variables) parent
    in interpreter{environmentTable = Map.insert thisInterp env $ environmentTable interpreter}
 
-assign :: Interpreter -> Expr -> SomeValue -> Either String Interpreter
-assign interpreter expr@(Assign name _) value =
+assign :: Interpreter -> Expr -> Token -> SomeValue -> Either String Interpreter
+assign interpreter expr name value =
   case locals interpreter Map.!? expr of
     Nothing -> assignGlobal interpreter name value
     Just distance -> assignAt interpreter distance name value
-assign _ _ _ = error ""
 
 assignAt :: Interpreter -> Int -> Token -> SomeValue -> Either String Interpreter
 assignAt interpreter distance name val =
@@ -268,7 +267,6 @@ setProperty iid name val interpreter =
       envMap (Environment vars pID) = Environment (Map.map mapFunc vars) pID
    in interpreter{environmentTable = Map.map envMap $ environmentTable interpreter}
 
--- TODO: use DataKinds in Expr
 data ValueKind
   = ValueNumber
   | ValueStr

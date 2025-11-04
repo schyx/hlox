@@ -123,9 +123,9 @@ interpretExpr interp (Call callee paren argExprs) = do
     (val, interp') <- interpretExpr argsInterp expr
     (params, afterParamsInterp) <- interpretExprs interp' exprs
     return (val : params, afterParamsInterp)
-interpretExpr interp expr@(Assign _ value) = do
+interpretExpr interp expr@(Assign name value) = do
   (val, interp') <- interpretExpr interp value
-  case assign interp' expr val of
+  case assign interp' expr name val of
     Right assignedInterp -> return (val, assignedInterp)
     Left err -> throwRuntimeError err
 interpretExpr interp (Binary left operator right) = do
