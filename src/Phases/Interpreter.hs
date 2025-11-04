@@ -328,7 +328,7 @@ instance Ord (Value k) where
   compare (VClass name1 _ _) (VClass name2 _ _) = compare name1 name2
   compare (VInstance _ _ _ iid1) (VInstance _ _ _ iid2) = compare iid1 iid2
 
-instance Show (Value k) where -- TODO: change literal to not include identifiers
+instance Show (Value k) where
   show (VNumber n) = formatNumber n
    where
     formatNumber :: Double -> String
