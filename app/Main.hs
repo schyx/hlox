@@ -2,7 +2,6 @@ module Main (main) where
 
 import Control.Monad.Except (runExceptT)
 import qualified Data.Map as Map
-import Phases.Interpret
 import Phases.Interpreter
 import Phases.Parse
 import Phases.Resolver

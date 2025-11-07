@@ -29,7 +29,6 @@ library
       Lib
       Parser
       Phases.Expr
-      Phases.Interpret
       Phases.Interpreter
       Phases.Parse
       Phases.Resolver
