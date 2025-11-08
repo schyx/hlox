@@ -163,12 +163,11 @@ interpretExpr interp (Binary left operator right) = do
           Right (leftn, rightn) ->
             return $ SomeValue $ VNumber $ (numericBinaryTable Map.! tokenType operator) leftn rightn
           Left err -> throwRuntimeError err
-    | Map.member (tokenType operator) booleanBinaryTable =
+    | otherwise =
         case toNumberPair leftVal rightVal operator of
           Right (leftn, rightn) ->
             return $ SomeValue $ VBoolean $ (booleanBinaryTable Map.! tokenType operator) leftn rightn
           Left err -> throwRuntimeError err
-    | otherwise = error "Unexpected opType when interpreting binary"
   booleanBinaryTable =
     Map.fromList
       [ (LESS, (<))
@@ -184,12 +183,18 @@ interpretExpr interp (Binary left operator right) = do
       ]
 interpretExpr interp (Unary operator expr) = do
   (val, interp') <- interpretExpr interp expr
-  case tokenType operator of
-    BANG -> return (SomeValue $ VBoolean $ not $ isTruthy val, interp')
-    MINUS -> case toNumber val operator of
-      Right n -> return (SomeValue $ VNumber $ -n, interp')
-      Left err -> throwRuntimeError err
-    _ -> error "unexpected opType when interpreting unary"
+  (unaryOpTable Map.! tokenType operator) val interp'
+ where
+  unaryOpTable =
+    Map.fromList
+      [ (BANG, \val interp' -> return (SomeValue $ VBoolean $ not $ isTruthy val, interp'))
+      ,
+        ( MINUS
+        , \val interp' -> case toNumber val operator of
+            Right n -> return (SomeValue $ VNumber $ -n, interp')
+            Left err -> throwRuntimeError err
+        )
+      ]
 interpretExpr interp (Grouping expr) = interpretExpr interp expr
 interpretExpr interp expr@(Variable tok) =
   case lookupVariable interp tok expr of
