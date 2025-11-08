@@ -1,4 +1,5 @@
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE DataKinds #-}
 
 module Phases.Resolver (resolve, Locals (..)) where
 
@@ -6,7 +7,7 @@ import qualified Data.Map as Map
 import Data.Maybe (fromMaybe)
 import Error (resolveError)
 import Phases.Expr (Expr (..))
-import Phases.Stmt (SomeStmt (SomeStmt), Stmt (..))
+import Phases.Stmt (SomeStmt (SomeStmt), Stmt (..), StmtKind (..))
 import Tokens (Token (lexeme))
 
 newtype Locals = Locals {resolverMap :: Map.Map Expr Int}
@@ -110,7 +111,7 @@ resolveStmt (SomeStmt (If condition thenBranch maybeElseBranch)) =
 resolveStmt (SomeStmt (While condition body)) =
   resolveStmt body
     . resolveExpr condition
-resolveStmt stmt@(SomeStmt (Function name _ _)) =
+resolveStmt (SomeStmt stmt@(Function name _ _)) =
   resolveFunction stmt FUNCTION Nothing
     . define name
     . declare name
@@ -131,7 +132,7 @@ resolveStmt (SomeStmt (Class name methods)) =
             ( flip
                 ( \method@(Function methodName _ _) ->
                     resolveFunction
-                      (SomeStmt method)
+                      method
                       (if lexeme methodName == "init" then INITIALIZER else METHOD)
                       $ Just CLASS
                 )
@@ -144,8 +145,8 @@ resolveStmt (SomeStmt (Class name methods)) =
     . define name
     . declare name
 
-resolveFunction :: SomeStmt -> FunctionType -> Maybe ClassType -> ResolverType -> ResolverType
-resolveFunction (SomeStmt (Function _ params body)) ftype ctype resolverType =
+resolveFunction :: Stmt KFunction -> FunctionType -> Maybe ClassType -> ResolverType -> ResolverType
+resolveFunction (Function _ params body) ftype ctype resolverType =
   ( endScope
       . (\rt -> foldl (flip resolveStmt) rt body) -- resolve body
       . (\rt -> foldl (flip $ \tok -> define tok . declare tok) rt params) -- resolve params
@@ -155,7 +156,6 @@ resolveFunction (SomeStmt (Function _ params body)) ftype ctype resolverType =
     { currentFunction = currentFunction resolverType
     , currentClass = currentClass resolverType
     }
-resolveFunction _ _ _ _ = error "called incorrectly"
 
 resolveExpr :: Expr -> ResolverType -> ResolverType
 resolveExpr expr@(Assign name value) = resolveLocal expr name . resolveExpr value
