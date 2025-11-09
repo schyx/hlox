@@ -15,15 +15,12 @@ data Literal
   deriving (Eq, Ord)
 
 instance Show Literal where
-  show (Number n) = formatNumber n
-   where
-    formatNumber :: Double -> String
-    formatNumber x
-      | isNegativeZero x = "-0"
-      | x == fromInteger (round x) = show (round x :: Integer)
-      | otherwise = showFFloat Nothing x ""
-  show (Str s) = s
-  show (Boolean b) = if b then "true" else "false"
+  show (Number number)
+    | isNegativeZero number = "-0"
+    | number == fromInteger (round number) = show (round number :: Integer)
+    | otherwise = showFFloat Nothing number ""
+  show (Str string) = string
+  show (Boolean boolean) = if boolean then "true" else "false"
   show Nil = "nil"
 
 data Token = MkToken
