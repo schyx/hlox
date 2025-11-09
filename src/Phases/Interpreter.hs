@@ -74,9 +74,9 @@ interpret interp (SomeStmt (Class name classMethods)) =
         Nothing -> 0
         Just (VFunction args _ _ _ _ _ _) -> length args
       klass = SomeValue $ VClass (lexeme name) arity methods
-   in case assignTok interp' name klass of
-        Right interp'' -> return (restoreRunningEnv interp'' $ createChildEnv interp'')
-        Left err -> throwRuntimeError err
+   in do
+        interp'' <- assignTok interp' name klass
+        return (restoreRunningEnv interp'' $ createChildEnv interp'')
 
 functionToValue :: Interpreter -> Bool -> Stmt 'KFunction -> (Value 'ValueFunction, Interpreter)
 functionToValue interp isInitializer (Function fname params body) =
@@ -134,9 +134,8 @@ interpretExpr interp (Call callee paren argExprs) = do
     return (val : params, afterParamsInterp)
 interpretExpr interp expr@(Assign name value) = do
   (val, interp') <- interpretExpr interp value
-  case assign interp' expr name val of
-    Right assignedInterp -> return (val, assignedInterp)
-    Left err -> throwRuntimeError err
+  assignedInterp <- assign interp' expr name val
+  return (val, assignedInterp)
 interpretExpr interp (Binary left operator right) = do
   (leftVal, afterLeftInterp) <- interpretExpr interp left
   (rightVal, afterRightInterp) <- interpretExpr afterLeftInterp right
@@ -153,21 +152,13 @@ interpretExpr interp (Binary left operator right) = do
                   then leftVal == rightVal
                   else leftVal /= rightVal
               )
-    | tokenType operator == PLUS = case toNumberPair leftVal rightVal operator of
-        Right (leftn, rightn) -> return $ SomeValue $ VNumber $ leftn + rightn
-        Left _ -> case (leftVal, rightVal) of
-          (SomeValue (VStr lefts), SomeValue (VStr rights)) -> return $ SomeValue $ VStr $ lefts ++ rights
-          _ -> throwRuntimeError $ runtimeError operator "Operands must be two numbers or two strings."
-    | Map.member (tokenType operator) numericBinaryTable =
-        case toNumberPair leftVal rightVal operator of
-          Right (leftn, rightn) ->
-            return $ SomeValue $ VNumber $ (numericBinaryTable Map.! tokenType operator) leftn rightn
-          Left err -> throwRuntimeError err
-    | otherwise =
-        case toNumberPair leftVal rightVal operator of
-          Right (leftn, rightn) ->
-            return $ SomeValue $ VBoolean $ (booleanBinaryTable Map.! tokenType operator) leftn rightn
-          Left err -> throwRuntimeError err
+    | tokenType operator == PLUS = plusOperator leftVal rightVal operator
+    | Map.member (tokenType operator) numericBinaryTable = do
+        (leftNumber, rightNumber) <- toNumberPair leftVal rightVal operator
+        return $ SomeValue $ VNumber $ (numericBinaryTable Map.! tokenType operator) leftNumber rightNumber
+    | otherwise = do
+        (leftNumber, rightNumber) <- toNumberPair leftVal rightVal operator
+        return $ SomeValue $ VBoolean $ (booleanBinaryTable Map.! tokenType operator) leftNumber rightNumber
   booleanBinaryTable =
     Map.fromList
       [ (LESS, (<))
@@ -190,16 +181,15 @@ interpretExpr interp (Unary operator expr) = do
       [ (BANG, \val interp' -> return (SomeValue $ VBoolean $ not $ isTruthy val, interp'))
       ,
         ( MINUS
-        , \val interp' -> case toNumber val operator of
-            Right n -> return (SomeValue $ VNumber $ -n, interp')
-            Left err -> throwRuntimeError err
+        , \val interp' -> do
+            n <- toNumber val operator
+            return (SomeValue $ VNumber $ -n, interp')
         )
       ]
 interpretExpr interp (Grouping expr) = interpretExpr interp expr
-interpretExpr interp expr@(Variable tok) =
-  case lookupVariable interp tok expr of
-    Right val -> return (val, interp)
-    Left err -> throwRuntimeError err
+interpretExpr interp expr@(Variable tok) = do
+  value <- lookupVariable interp tok expr
+  return (value, interp)
 interpretExpr interp (AndExpr left _ right) = do
   (val, interp') <- interpretExpr interp left
   if not $ isTruthy val
@@ -221,10 +211,9 @@ interpretExpr interp (Set object name value) = do
       (interpretedValue, interp'') <- interpretExpr interp' value
       return (interpretedValue, setProperty iid name interpretedValue interp'')
     _ -> throwRuntimeError $ runtimeError name "Only instances have fields."
-interpretExpr interp expr@(This keyword) =
-  case lookupVariable interp keyword expr of
-    Right value -> return (value, interp)
-    Left err -> throwRuntimeError err
+interpretExpr interp expr@(This keyword) = do
+  value <- lookupVariable interp keyword expr
+  return (value, interp)
 
 getFieldOrMethod :: Interpreter -> Token -> SomeValue -> InterpreterOutput (SomeValue, Interpreter)
 getFieldOrMethod interp name (SomeValue inst@(VInstance _ properties methods _)) =
@@ -238,14 +227,18 @@ getFieldOrMethod interp name (SomeValue inst@(VInstance _ properties methods _))
       Nothing -> throwRuntimeError $ runtimeError name $ "Undefined property '" ++ lexeme name ++ "'."
 getFieldOrMethod _ name _ = throwRuntimeError $ runtimeError name "Only instances have properties."
 
-toNumberPair :: SomeValue -> SomeValue -> Token -> Either String (Double, Double)
-toNumberPair left right op = case (toNumber left op, toNumber right op) of
-  (Right l, Right r) -> Right (l, r)
-  _ -> Left $ runtimeError op "Operands must be numbers."
+plusOperator :: SomeValue -> SomeValue -> Token -> InterpreterOutput SomeValue
+plusOperator (SomeValue (VNumber l)) (SomeValue (VNumber r)) _ = return $ SomeValue $ VNumber $ l + r
+plusOperator (SomeValue (VStr l)) (SomeValue (VStr r)) _ = return $ SomeValue $ VStr $ l ++ r
+plusOperator _ _ op = throwRuntimeError $ runtimeError op "Operands must be two numbers or two strings."
 
-toNumber :: SomeValue -> Token -> Either String Double
-toNumber (SomeValue (VNumber n)) _ = Right n
-toNumber _ token = Left $ runtimeError token "Operand must be a number."
+toNumberPair :: SomeValue -> SomeValue -> Token -> InterpreterOutput (Double, Double)
+toNumberPair (SomeValue (VNumber l)) (SomeValue (VNumber r)) _ = return (l, r)
+toNumberPair _ _ op = throwRuntimeError $ runtimeError op "Operands must be numbers."
+
+toNumber :: SomeValue -> Token -> InterpreterOutput Double
+toNumber (SomeValue (VNumber n)) _ = return n
+toNumber _ token = throwRuntimeError $ runtimeError token "Operand must be a number."
 
 isTruthy :: SomeValue -> Bool
 isTruthy (SomeValue VNil) = False
@@ -357,14 +350,14 @@ define interpreter token value =
                   (environmentTable interpreter)
             }
 
-assignTok :: Interpreter -> Token -> SomeValue -> Either String Interpreter
+assignTok :: Interpreter -> Token -> SomeValue -> InterpreterOutput Interpreter
 assignTok interpreter token value =
   case environmentTable interpreter Map.! currentEnvironment interpreter of
     (Environment envTable parent)
       | Map.member (lexeme token) envTable ->
           let assignedTable = Map.insert (lexeme token) value envTable
               assignedEnv = Environment assignedTable parent
-           in Right
+           in return
                 interpreter
                   { environmentTable =
                       Map.insert
@@ -376,7 +369,7 @@ assignTok interpreter token value =
           assignedInParent <- assignTok interpreter{currentEnvironment = pEnv} token value
           return $ interpreter{environmentTable = environmentTable assignedInParent}
       | Nothing <- parent ->
-          Left $ runtimeError token $ "Undefined variable '" ++ lexeme token ++ "'."
+          throwRuntimeError $ runtimeError token $ "Undefined variable '" ++ lexeme token ++ "'."
 
 assignThis :: Value 'ValueInstance -> Interpreter -> Interpreter -> Interpreter
 assignThis value (Interpreter _ _ thisInterp _ _ _) interpreter =
@@ -386,13 +379,13 @@ assignThis value (Interpreter _ _ thisInterp _ _ _) interpreter =
       env = Environment (Map.insert "this" (SomeValue value) variables) parent
    in interpreter{environmentTable = Map.insert thisInterp env $ environmentTable interpreter}
 
-assign :: Interpreter -> Expr -> Token -> SomeValue -> Either String Interpreter
+assign :: Interpreter -> Expr -> Token -> SomeValue -> InterpreterOutput Interpreter
 assign interpreter expr name value =
   case locals interpreter Map.!? expr of
     Nothing -> assignGlobal interpreter name value
     Just distance -> assignAt interpreter distance name value
 
-assignAt :: Interpreter -> Int -> Token -> SomeValue -> Either String Interpreter
+assignAt :: Interpreter -> Int -> Token -> SomeValue -> InterpreterOutput Interpreter
 assignAt interpreter distance name val =
   let ancestorId = ancestor distance interpreter $ currentEnvironment interpreter
       Environment envTable parent = fromMaybe (error "in assignAt") (environmentTable interpreter Map.!? ancestorId)
@@ -401,29 +394,29 @@ assignAt interpreter distance name val =
           ancestorId
           (Environment (Map.insert (lexeme name) val envTable) parent)
           (environmentTable interpreter)
-   in Right interpreter{environmentTable = newTable}
+   in return interpreter{environmentTable = newTable}
 
-assignGlobal :: Interpreter -> Token -> SomeValue -> Either String Interpreter
+assignGlobal :: Interpreter -> Token -> SomeValue -> InterpreterOutput Interpreter
 assignGlobal interpreter token value =
   let Environment globalTable pEnv = environmentTable interpreter Map.! EnvID 0
       newGlobalEnv = Environment (Map.insert (lexeme token) value globalTable) pEnv
    in case globalTable Map.!? lexeme token of
         Just _ ->
-          Right
+          return
             interpreter
               { environmentTable = Map.insert (EnvID 0) newGlobalEnv $ environmentTable interpreter
               }
-        Nothing -> Left $ runtimeError token $ "Undefined variable '" ++ lexeme token ++ "'."
+        Nothing -> throwRuntimeError $ runtimeError token $ "Undefined variable '" ++ lexeme token ++ "'."
 
-lookupVariable :: Interpreter -> Token -> Expr -> Either String SomeValue
+lookupVariable :: Interpreter -> Token -> Expr -> InterpreterOutput SomeValue
 lookupVariable interpreter name expr =
   case locals interpreter Map.!? expr of
     Nothing ->
       let Environment envTable _ = environmentTable interpreter Map.! EnvID 0
        in case envTable Map.!? lexeme name of
-            Nothing -> Left (runtimeError name $ "Undefined variable '" ++ lexeme name ++ "'.")
-            Just val -> Right val
-    Just distance -> Right $ getAt interpreter distance $ lexeme name
+            Nothing -> throwRuntimeError $ runtimeError name $ "Undefined variable '" ++ lexeme name ++ "'."
+            Just val -> return val
+    Just distance -> return $ getAt interpreter distance $ lexeme name
 
 getAt :: Interpreter -> Int -> String -> SomeValue
 getAt interpreter distance name =
