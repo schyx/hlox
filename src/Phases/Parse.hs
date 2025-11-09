@@ -14,8 +14,8 @@ import Phases.Expr
 import Phases.Stmt
 import Tokens
 
-maxArgNumber :: Int
-maxArgNumber = 255
+maxArgumentNumber :: Int
+maxArgumentNumber = 255
 
 type TreeResult = Either [String] [SomeStmt]
 
@@ -31,8 +31,8 @@ parse :: [Token] -> TreeResult
 parse input =
   let start = ([], input)
       output =
-        ( \val ->
-            let value = fromMaybe undefined val
+        ( \maybeValue ->
+            let value = fromMaybe undefined maybeValue
                 errs = fst . fst $ value
                 stmts = fromMaybe undefined $ sequenceA $ snd value
              in if null errs
@@ -49,14 +49,14 @@ planter = do
   return maybeStmt
 
 synchronize :: Planter ()
-synchronize = makePlanter $ \(inErrs, toks) ->
-  let syncTokens (t : tokens)
-        | tokenType t == EOF = t : tokens
-        | tokenType t == SEMICOLON = tokens
-        | tokenType t `elem` [CLASS, FUN, VAR, FOR, IF, WHILE, PRINT, RETURN] = t : tokens
+synchronize = makePlanter $ \(inErrs, inTokens) ->
+  let syncTokens (token : tokens)
+        | tokenType token == EOF = token : tokens
+        | tokenType token == SEMICOLON = tokens
+        | tokenType token `elem` [CLASS, FUN, VAR, FOR, IF, WHILE, PRINT, RETURN] = token : tokens
         | otherwise = syncTokens tokens
       syncTokens [] = error "Should not get empty in sync"
-   in Just ((inErrs, syncTokens toks), ())
+   in Just ((inErrs, syncTokens inTokens), ())
 
 -- | Allows for choice on the Planter level rather than the MaybeT level
 (<||>) :: MaybeT Planter a -> MaybeT Planter a -> MaybeT Planter a
@@ -66,40 +66,40 @@ infixl 3 <||>
 
 -- | Checks that the first token satisfies the predicate
 check :: (TokenType -> Bool) -> MaybeT Planter Token
-check predicate = MaybeT $ makePlanter $ \(inErrs, toks) ->
-  let t1 = head toks
-   in if predicate $ tokenType t1
-        then Just ((inErrs, toks), Just t1)
+check predicate = MaybeT $ makePlanter $ \(inErrs, inTokens) ->
+  let firstToken = head inTokens
+   in if predicate $ tokenType firstToken
+        then Just ((inErrs, inTokens), Just firstToken)
         else Nothing
 
-getFirst :: MaybeT Planter Token
-getFirst = check $ const True
+getFirstToken :: MaybeT Planter Token
+getFirstToken = check $ const True
 
 match :: (TokenType -> Bool) -> MaybeT Planter Token
-match predicate = MaybeT $ makePlanter $ \(inErrs, toks) ->
-  let t1 = head toks
-      rest = tail toks
-   in if predicate $ tokenType t1
-        then Just ((inErrs, rest), Just t1)
+match predicate = MaybeT $ makePlanter $ \(inErrs, inTokens) ->
+  let firstToken = head inTokens
+      restTokens = tail inTokens
+   in if predicate $ tokenType firstToken
+        then Just ((inErrs, restTokens), Just firstToken)
         else Nothing
 
 consume :: TokenType -> String -> MaybeT Planter Token
-consume desiredType msg = MaybeT $ makePlanter $ \(inErrs, toks) ->
-  let t1 = head toks
-      rest = tail toks
-      outIfErr = parseError t1 msg : inErrs
+consume desiredType message = MaybeT $ makePlanter $ \(inErrs, inTokens) ->
+  let firstToken = head inTokens
+      restTokens = tail inTokens
+      errsIfFail = parseError firstToken message : inErrs
    in Just $
-        if tokenType t1 == desiredType
-          then ((inErrs, rest), Just t1)
-          else ((outIfErr, toks), Nothing)
+        if tokenType firstToken == desiredType
+          then ((inErrs, restTokens), Just firstToken)
+          else ((errsIfFail, inTokens), Nothing)
 
 addParseError :: String -> MaybeT Planter a
-addParseError errMsg = MaybeT $ makePlanter $ \(inErrs, toks) ->
-  Just ((errMsg : inErrs, toks), Nothing)
+addParseError errMessage = MaybeT $ makePlanter $ \(inErrs, tokens) ->
+  Just ((errMessage : inErrs, tokens), Nothing)
 
 addNonBlockingParseError :: String -> MaybeT Planter ()
-addNonBlockingParseError errMsg = MaybeT $ makePlanter $ \(inErrs, toks) ->
-  Just ((errMsg : inErrs, toks), Just ())
+addNonBlockingParseError errMessage = MaybeT $ makePlanter $ \(inErrs, tokens) ->
+  Just ((errMessage : inErrs, tokens), Just ())
 
 expressionWrapper :: [Token] -> Either [String] Expr
 expressionWrapper =
@@ -112,7 +112,7 @@ declaration :: MaybeT Planter SomeStmt
 declaration =
   (SomeStmt <$> classDeclaration)
     <||> (SomeStmt <$> functionDeclaration)
-    <||> (SomeStmt <$> varDeclaration)
+    <||> (SomeStmt <$> variableDeclaration)
     <||> statement
 
 classDeclaration :: MaybeT Planter (Stmt KClass)
@@ -133,40 +133,40 @@ createCallable callableType = do
       then consume IDENTIFIER $ "Expect " ++ callableType ++ " name."
       else matchMaybeT (`notElem` [RIGHT_BRACE, EOF])
   _ <- consume LEFT_PAREN $ "Expect '(' after " ++ callableType ++ " name."
-  params <- getParams
+  parameters <- getParameters
   _ <- consume LEFT_BRACE $ "Expect '{' before " ++ callableType ++ " body."
   body <- buildBlock []
-  return $ Function name params body
+  return $ Function name parameters body
  where
-  getParams = addParam [] <||> endParamList []
-  addParam buildup = do
-    when (length buildup >= maxArgNumber) $ do
-      first <- getFirst
-      let tooManyParamsMsg = parseError first ("Can't have more than " ++ show maxArgNumber ++ " parameters.")
-      addNonBlockingParseError tooManyParamsMsg
-    param <- match (== IDENTIFIER)
-    let newBuildup = param : buildup
-    (match (== COMMA) >> addParam newBuildup)
-      <||> endParamList newBuildup
-  endParamList buildup = consume RIGHT_PAREN "Expect ')' after parameters." $> reverse buildup
-  matchMaybeT predicate = MaybeT $ makePlanter $ \(inErrs, toks) ->
-    let t1 = head toks
-        rest = tail toks
+  getParameters = addParameters [] <||> endParameterList []
+  addParameters buildup = do
+    when (length buildup >= maxArgumentNumber) $ do
+      firstToken <- getFirstToken
+      let tooManyParamsMessage = parseError firstToken ("Can't have more than " ++ show maxArgumentNumber ++ " parameters.")
+      addNonBlockingParseError tooManyParamsMessage
+    parameter <- match (== IDENTIFIER)
+    let newBuildup = parameter : buildup
+    (match (== COMMA) >> addParameters newBuildup)
+      <||> endParameterList newBuildup
+  endParameterList buildup = consume RIGHT_PAREN "Expect ')' after parameters." $> reverse buildup
+  matchMaybeT predicate = MaybeT $ makePlanter $ \(inErrs, inTokens) ->
+    let firstToken = head inTokens
+        restTokens = tail inTokens
      in Just $
-          if predicate $ tokenType t1
-            then ((inErrs, rest), Just t1)
-            else ((inErrs, toks), Nothing)
+          if predicate $ tokenType firstToken
+            then ((inErrs, restTokens), Just firstToken)
+            else ((inErrs, inTokens), Nothing)
 
-varDeclaration :: MaybeT Planter (Stmt KVar)
-varDeclaration = do
-  varName <- match (== VAR) *> consume IDENTIFIER "Expect variable name."
-  assignVal varName
-    <||> noVal varName
+variableDeclaration :: MaybeT Planter (Stmt KVar)
+variableDeclaration = do
+  variableName <- match (== VAR) *> consume IDENTIFIER "Expect variable name."
+  assignVal variableName
+    <||> noVal variableName
     <||> unexpectedToken
  where
-  assignVal varName =
-    Var varName <$> (match (== EQUAL) *> expression <* consume SEMICOLON "Expect ';' after variable declaration.")
-  noVal varName = Var varName <$> (match (== SEMICOLON) $> Primary Nil)
+  assignVal variableName =
+    Var variableName <$> (match (== EQUAL) *> expression <* consume SEMICOLON "Expect ';' after variable declaration.")
+  noVal variableName = Var variableName <$> (match (== SEMICOLON) $> Primary Nil)
   unexpectedToken =
     (parseError <$> match (const True) <*> pure "Expect ';' after variable declaration.")
       >>= addParseError
@@ -187,7 +187,7 @@ forStatement = do
   _ <- consume LEFT_PAREN "Expect '(' after for."
   initializer <-
     (match (== SEMICOLON) >> pure Nothing)
-      <||> (Just . SomeStmt <$> varDeclaration)
+      <||> (Just . SomeStmt <$> variableDeclaration)
       <||> (Just . SomeStmt <$> expressionStatement)
   condition <-
     (check (== SEMICOLON) >> pure Nothing)
@@ -199,18 +199,18 @@ forStatement = do
   _ <- consume RIGHT_PAREN "Expect ')' after for clauses."
   desugarToWhile initializer condition increment <$> statement
  where
-  desugarToWhile initializer condition increment body =
-    let newBody = case increment of
+  desugarToWhile maybeInitializer maybeCondition maybeIncrement body =
+    let newBody = case maybeIncrement of
           Nothing -> body
-          Just inc -> SomeStmt . Block $ [body, SomeStmt $ Expression inc]
-        newCondition = case condition of
+          Just increment -> SomeStmt . Block $ [body, SomeStmt $ Expression increment]
+        newCondition = case maybeCondition of
           Nothing -> Primary $ Boolean True
-          Just cond -> cond
+          Just condition -> condition
         newStmt =
           let while = While newCondition newBody
-           in case initializer of
+           in case maybeInitializer of
                 Nothing -> SomeStmt while
-                Just initial -> SomeStmt $ Block [initial, SomeStmt while]
+                Just initializer -> SomeStmt $ Block [initializer, SomeStmt while]
      in newStmt
 
 ifStatement :: MaybeT Planter (Stmt KIf)
@@ -293,20 +293,20 @@ chainedOperator ::
   [TokenType] ->
   (Expr -> Token -> Expr -> Expr) ->
   MaybeT Planter Expr
-chainedOperator innerPlanter opTypes exprConstructor = do
+chainedOperator innerPlanter operatorTypes exprConstructor = do
   left <- innerPlanter
   ( do
-      op <- match (`elem` opTypes)
-      chainedOperatorHelper left op
+      operator <- match (`elem` operatorTypes)
+      chainedOperatorHelper left operator
     )
     <||> return left
  where
-  chainedOperatorHelper left op = do
+  chainedOperatorHelper left operator = do
     right <- innerPlanter
-    let expr = exprConstructor left op right
+    let expr = exprConstructor left operator right
     ( do
-        op' <- match (`elem` opTypes)
-        chainedOperatorHelper expr op'
+        nextOperator <- match (`elem` operatorTypes)
+        chainedOperatorHelper expr nextOperator
       )
       <||> return expr
 
@@ -329,12 +329,12 @@ call = callOrGet <||> primary
     (check (/= RIGHT_PAREN) >> argsHelper [])
       <||> (consume RIGHT_PAREN "Expect ')' after arguments." >> pure [])
   argsHelper buildup = do
-    when (length buildup >= maxArgNumber) $ do
-      first <- getFirst
-      let tooManyArgsMsg = parseError first ("Can't have more than " ++ show maxArgNumber ++ " arguments.")
+    when (length buildup >= maxArgumentNumber) $ do
+      firstToken <- getFirstToken
+      let tooManyArgsMsg = parseError firstToken ("Can't have more than " ++ show maxArgumentNumber ++ " arguments.")
       addNonBlockingParseError tooManyArgsMsg
-    arg <- expression
-    let newBuildup = arg : buildup
+    argument <- expression
+    let newBuildup = argument : buildup
     (match (== COMMA) >> argsHelper newBuildup)
       <||> (consume RIGHT_PAREN "Expect ')' after arguments." >> return (reverse newBuildup))
 
