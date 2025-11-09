@@ -1,5 +1,5 @@
-{-# LANGUAGE GADTs #-}
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE GADTs #-}
 
 module Phases.Resolver (resolve, Locals (..)) where
 
@@ -18,73 +18,73 @@ data FunctionType = NONE | FUNCTION | METHOD | INITIALIZER
 data ClassType = NO_CLASS | CLASS
   deriving (Eq)
 
-data ResolverType = ResolverType
-  { errs :: [String]
+data Resolver = Resolver
+  { errors :: [String]
   , currentResolverMap :: Map.Map Expr Int
   , scopes :: [Map.Map String Bool]
   , currentFunction :: FunctionType
   , currentClass :: ClassType
   }
 
-addError :: Token -> String -> ResolverType -> ResolverType
-addError tok errMsg rt = rt{errs = resolveError tok errMsg : errs rt}
+addError :: Token -> String -> Resolver -> Resolver
+addError token errMessage resolver = resolver{errors = resolveError token errMessage : errors resolver}
 
-beginScope :: ResolverType -> ResolverType
-beginScope rt = rt{scopes = Map.empty : scopes rt}
+beginScope :: Resolver -> Resolver
+beginScope resolver = resolver{scopes = Map.empty : scopes resolver}
 
-endScope :: ResolverType -> ResolverType
-endScope rt = rt{scopes = tail $ scopes rt}
+endScope :: Resolver -> Resolver
+endScope resolver = resolver{scopes = tail $ scopes resolver}
 
-declare :: Token -> ResolverType -> ResolverType
-declare varName rt = case scopes rt of
-  [] -> rt
+declare :: Token -> Resolver -> Resolver
+declare variableName resolver = case scopes resolver of
+  [] -> resolver
   scope : rest ->
-    case scope Map.!? lexeme varName of
+    case scope Map.!? lexeme variableName of
       Just _ ->
-        rt
-          { errs =
+        resolver
+          { errors =
               resolveError
-                varName
+                variableName
                 "Already a variable with this name in this scope."
-                : errs rt
-          , scopes = Map.insert (lexeme varName) False scope : rest
+                : errors resolver
+          , scopes = Map.insert (lexeme variableName) False scope : rest
           }
-      Nothing -> rt{scopes = Map.insert (lexeme varName) False scope : rest}
+      Nothing -> resolver{scopes = Map.insert (lexeme variableName) False scope : rest}
 
-define :: Token -> ResolverType -> ResolverType
-define varName rt = case scopes rt of
-  [] -> rt
-  scope : rest -> rt{scopes = Map.insert (lexeme varName) True scope : rest}
+define :: Token -> Resolver -> Resolver
+define variableName resolver = case scopes resolver of
+  [] -> resolver
+  scope : rest -> resolver{scopes = Map.insert (lexeme variableName) True scope : rest}
 
 resolve :: [SomeStmt] -> Either [String] Locals
 resolve inputStmts =
   let emptyResolverType =
-        ResolverType
-          { errs = []
+        Resolver
+          { errors = []
           , currentResolverMap = Map.empty
           , scopes = []
           , currentFunction = NONE
           , currentClass = NO_CLASS
           }
       outputResolverType = foldl (flip resolveStmt) emptyResolverType inputStmts
-   in if null $ errs outputResolverType
+   in if null $ errors outputResolverType
         then
           Right $
             Locals
               { resolverMap = currentResolverMap outputResolverType
               }
-        else Left $ reverse $ errs outputResolverType
+        else Left $ reverse $ errors outputResolverType
 
-resolveName :: Expr -> Maybe Int -> ResolverType -> ResolverType
-resolveName expr maybeDepth rt = case maybeDepth of
-  Nothing -> rt
-  Just depth -> rt{currentResolverMap = Map.insert expr depth $ currentResolverMap rt}
+resolveName :: Expr -> Maybe Int -> Resolver -> Resolver
+resolveName expr maybeDepth resolver = case maybeDepth of
+  Nothing -> resolver
+  Just depth -> resolver{currentResolverMap = Map.insert expr depth $ currentResolverMap resolver}
 
-resolveLocal :: Expr -> Token -> ResolverType -> ResolverType
-resolveLocal expr name rt = resolveName expr depth rt
+resolveLocal :: Expr -> Token -> Resolver -> Resolver
+resolveLocal expr name resolver = resolveName expr depth resolver
  where
   depth :: Maybe Int
-  depth = depthHelper 0 (scopes rt)
+  depth = depthHelper 0 (scopes resolver)
   depthHelper :: Int -> [Map.Map String Bool] -> Maybe Int
   depthHelper _ [] = Nothing
   depthHelper currentDepth (scope : rest) =
@@ -93,16 +93,16 @@ resolveLocal expr name rt = resolveName expr depth rt
       Nothing -> depthHelper (currentDepth + 1) rest
 
 -- TODO: refactor to be in alphabetical order
-resolveStmt :: SomeStmt -> ResolverType -> ResolverType
+resolveStmt :: SomeStmt -> Resolver -> Resolver
 resolveStmt (SomeStmt (Expression expr)) = resolveExpr expr
 resolveStmt (SomeStmt (Print expr)) = resolveExpr expr
-resolveStmt (SomeStmt (Var varName varVal)) =
-  define varName
-    . resolveExpr varVal
-    . declare varName
+resolveStmt (SomeStmt (Var variableName variableValue)) =
+  define variableName
+    . resolveExpr variableValue
+    . declare variableName
 resolveStmt (SomeStmt (Block blockStmts)) =
   endScope
-    . (\rt -> foldl (flip resolveStmt) rt blockStmts)
+    . (\resolver -> foldl (flip resolveStmt) resolver blockStmts)
     . beginScope
 resolveStmt (SomeStmt (If condition thenBranch maybeElseBranch)) =
   maybe id resolveStmt maybeElseBranch
@@ -119,15 +119,15 @@ resolveStmt (SomeStmt (Return keyword returnValue)) =
   maybe id resolveExpr returnValue
     . checkFunctionType
  where
-  checkFunctionType rt
-    | currentFunction rt == NONE = addError keyword "Can't return from top-level code." rt
+  checkFunctionType resolver
+    | currentFunction resolver == NONE = addError keyword "Can't return from top-level code." resolver
     | Just _ <- returnValue
-    , currentFunction rt == INITIALIZER =
-        addError keyword "Can't return a value from an initializer." rt
-    | otherwise = rt
+    , currentFunction resolver == INITIALIZER =
+        addError keyword "Can't return a value from an initializer." resolver
+    | otherwise = resolver
 resolveStmt (SomeStmt (Class name methods)) =
   endScope
-    . ( \rt ->
+    . ( \resolver ->
           foldl
             ( flip
                 ( \method@(Function methodName _ _) ->
@@ -137,39 +137,39 @@ resolveStmt (SomeStmt (Class name methods)) =
                       $ Just CLASS
                 )
             )
-            rt
+            resolver
             methods
       )
-    . (\rt -> rt{scopes = Map.insert "this" True (head $ scopes rt) : tail (scopes rt)})
+    . (\resolver -> resolver{scopes = Map.insert "this" True (head $ scopes resolver) : tail (scopes resolver)})
     . beginScope
     . define name
     . declare name
 
-resolveFunction :: Stmt KFunction -> FunctionType -> Maybe ClassType -> ResolverType -> ResolverType
-resolveFunction (Function _ params body) ftype ctype resolverType =
+resolveFunction :: Stmt KFunction -> FunctionType -> Maybe ClassType -> Resolver -> Resolver
+resolveFunction (Function _ parameters body) functionType classType resolverType =
   ( endScope
-      . (\rt -> foldl (flip resolveStmt) rt body) -- resolve body
-      . (\rt -> foldl (flip $ \tok -> define tok . declare tok) rt params) -- resolve params
+      . (\resolver -> foldl (flip resolveStmt) resolver body) -- resolve body
+      . (\resolver -> foldl (flip $ \token -> define token . declare token) resolver parameters) -- resolve params
       . beginScope
-      $ resolverType{currentFunction = ftype, currentClass = fromMaybe (currentClass resolverType) ctype}
+      $ resolverType{currentFunction = functionType, currentClass = fromMaybe (currentClass resolverType) classType}
   )
     { currentFunction = currentFunction resolverType
     , currentClass = currentClass resolverType
     }
 
-resolveExpr :: Expr -> ResolverType -> ResolverType
+resolveExpr :: Expr -> Resolver -> Resolver
 resolveExpr expr@(Assign name value) = resolveLocal expr name . resolveExpr value
 resolveExpr (Binary left _ right) = resolveExpr right . resolveExpr left
 resolveExpr (Grouping expr) = resolveExpr expr
 resolveExpr (Unary _ expr) = resolveExpr expr
-resolveExpr expr@(Variable varTok) =
-  let errorCheck rt = case scopes rt of
-        [] -> rt
-        scope : _ -> case scope Map.!? lexeme varTok of
-          Nothing -> rt
-          Just True -> rt
-          Just False -> addError varTok "Can't read local variable in its own initializer." rt
-   in resolveLocal expr varTok . errorCheck
+resolveExpr expr@(Variable variableToken) =
+  let errorCheck resolver = case scopes resolver of
+        [] -> resolver
+        scope : _ -> case scope Map.!? lexeme variableToken of
+          Nothing -> resolver
+          Just True -> resolver
+          Just False -> addError variableToken "Can't read local variable in its own initializer." resolver
+   in resolveLocal expr variableToken . errorCheck
 resolveExpr (Primary _) = id
 resolveExpr (OrExpr left _ right) =
   resolveExpr right
@@ -177,8 +177,8 @@ resolveExpr (OrExpr left _ right) =
 resolveExpr (AndExpr left _ right) =
   resolveExpr right
     . resolveExpr left
-resolveExpr (Call caller _ args) =
-  (\rt -> foldl (flip resolveExpr) rt args)
+resolveExpr (Call caller _ arguments) =
+  (\resolver -> foldl (flip resolveExpr) resolver arguments)
     . resolveExpr caller
 resolveExpr (Get object _) = resolveExpr object
 resolveExpr (Set object _ value) =
@@ -186,7 +186,7 @@ resolveExpr (Set object _ value) =
     . resolveExpr object
 resolveExpr expr@(This keyword) = resolveLocal expr keyword . checkClassType
  where
-  checkClassType rt =
-    if currentClass rt == NO_CLASS
-      then addError keyword "Can't use 'this' outside of a class." rt
-      else rt
+  checkClassType resolver =
+    if currentClass resolver == NO_CLASS
+      then addError keyword "Can't use 'this' outside of a class." resolver
+      else resolver
