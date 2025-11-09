@@ -26,7 +26,6 @@ source-repository head
 library
   exposed-modules:
       Error
-      Lib
       Parser
       Phases.Expr
       Phases.Interpreter
