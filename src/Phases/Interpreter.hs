@@ -29,135 +29,151 @@ throwRuntimeError :: String -> InterpreterOutput a
 throwRuntimeError = lift . throwError
 
 interpret :: Interpreter -> SomeStmt -> InterpreterOutput Interpreter
-interpret interp (SomeStmt (Print expr)) = do
-  (val, interp') <- interpretExpr interp expr
+interpret interpreter (SomeStmt (Print expr)) = do
+  (val, interp') <- interpretExpr interpreter expr
   liftIO $ print val
   return interp'
-interpret interp (SomeStmt (Expression expr)) = do
-  (_, interp') <- interpretExpr interp expr
+interpret interpreter (SomeStmt (Expression expr)) = do
+  (_, interp') <- interpretExpr interpreter expr
   return interp'
-interpret interp (SomeStmt (Var name initializer)) = do
-  (val, interp') <- interpretExpr interp initializer
+interpret interpreter (SomeStmt (Var name initializer)) = do
+  (val, interp') <- interpretExpr interpreter initializer
   return $ define interp' name val
-interpret interp (SomeStmt (Block stmts)) = do
-  let interp' = createChildEnv interp
+interpret interpreter (SomeStmt (Block stmts)) = do
+  let interp' = createChildEnv interpreter
   interp'' <- execBlock interp' stmts
   return $ changeToParent interp''
-interpret interp (SomeStmt (If condition ifBranch (Just elseBranch))) = do
-  (val, interp') <- interpretExpr interp condition
+interpret interpreter (SomeStmt (If condition ifBranch (Just elseBranch))) = do
+  (val, interp') <- interpretExpr interpreter condition
   interpret interp' (if isTruthy val then ifBranch else elseBranch)
-interpret interp (SomeStmt (If condition ifBranch Nothing)) = do
-  (val, interp') <- interpretExpr interp condition
+interpret interpreter (SomeStmt (If condition ifBranch Nothing)) = do
+  (val, interp') <- interpretExpr interpreter condition
   if isTruthy val then interpret interp' ifBranch else return interp'
-interpret interp (SomeStmt (While condition whileBlock)) = do
-  (val, interp') <- interpretExpr interp condition
-  if isTruthy val
+interpret interpreter (SomeStmt (While condition whileBlock)) = do
+  (value, interpreter') <- interpretExpr interpreter condition
+  if isTruthy value
     then do
-      interp'' <- interpret interp' whileBlock
-      interpret interp'' (SomeStmt (While condition whileBlock))
-    else return interp'
-interpret interp (SomeStmt func@(Function fname _ _)) =
-  let (funcObj, interp') = functionToValue interp False func
-   in return $ define interp' fname $ SomeValue funcObj
-interpret interp (SomeStmt (Return _ returnValue)) =
-  case returnValue of
-    Nothing -> throwError (SomeValue VNil, interp)
+      interpreter'' <- interpret interpreter' whileBlock
+      interpret interpreter'' (SomeStmt (While condition whileBlock))
+    else return interpreter'
+interpret interpreter (SomeStmt function@(Function functionName _ _)) =
+  let (functionObject, interpreter') = functionToValue interpreter False function
+   in return $ define interpreter' functionName $ SomeValue functionObject
+interpret interpreter (SomeStmt (Return _ returnExpression)) =
+  case returnExpression of
+    Nothing -> throwError (SomeValue VNil, interpreter)
     Just value -> do
-      (val, interp') <- interpretExpr interp value
-      throwError (val, interp')
-interpret interp (SomeStmt (Class name classMethods)) =
-  let interp' = define interp name $ SomeValue VNil
-      foldFunc func@(Function fname _ _) =
-        Map.insert (lexeme fname) (fst $ functionToValue (createChildEnv interp) (lexeme fname == "init") func)
+      (returnValue, interpreter') <- interpretExpr interpreter value
+      throwError (returnValue, interpreter')
+interpret interpreter (SomeStmt (Class name classMethods)) =
+  let interpreter' = define interpreter name $ SomeValue VNil
+      foldFunc function@(Function functionName _ _) =
+        Map.insert
+          (lexeme functionName)
+          (fst $ functionToValue (createChildEnv interpreter) (lexeme functionName == "init") function)
       methods = foldr foldFunc Map.empty classMethods
       arity = case methods Map.!? "init" of
         Nothing -> 0
-        Just (VFunction args _ _ _ _ _ _) -> length args
+        Just (VFunction numArgs _ _ _ _ _ _) -> length numArgs
       klass = SomeValue $ VClass (lexeme name) arity methods
    in do
-        interp'' <- assignTok interp' name klass
-        return (restoreRunningEnv interp'' $ createChildEnv interp'')
+        interpreter'' <- assignTok interpreter' name klass
+        return (restoreRunningEnv interpreter'' $ createChildEnv interpreter'')
 
 functionToValue :: Interpreter -> Bool -> Stmt 'KFunction -> (Value 'ValueFunction, Interpreter)
-functionToValue interp isInitializer (Function fname params body) =
-  let functionF interpreter args = do
-        let enclosingInterp = restoreRunningEnv interp interpreter
-        let fInterpInitial = createChildEnv enclosingInterp
-        let fInterp = foldl (\prevInterp (tok, val) -> define prevInterp tok val) fInterpInitial (zip params args)
-        run <- runExceptT $ execBlock fInterp body
+functionToValue definingInterpreter isInitializer (Function functionName functionParameters body) =
+  let functionF callingInterpreter args = do
+        let enclosingInterpreter = restoreRunningEnv definingInterpreter callingInterpreter
+        let initialFunctionInterpreter = createChildEnv enclosingInterpreter
+        let functionInterpreter =
+              foldl
+                (\previousInterpreter (token, value) -> define previousInterpreter token value)
+                initialFunctionInterpreter
+                (zip functionParameters args)
+        run <- runExceptT $ execBlock functionInterpreter body
         case run of
-          Left (val, outputInterp) -> ExceptT $ return $ Right (val, outputInterp)
-          Right outputInterp -> ExceptT $ return $ Right (SomeValue VNil, outputInterp)
-   in addFunction params fname ("<fn " ++ lexeme fname ++ ">") isInitializer interp functionF interp
+          Left (value, outputInterpreter) -> ExceptT $ return $ Right (value, outputInterpreter)
+          Right outputInterpreter -> ExceptT $ return $ Right (SomeValue VNil, outputInterpreter)
+   in addFunction
+        functionParameters
+        functionName
+        ("<fn " ++ lexeme functionName ++ ">")
+        isInitializer
+        definingInterpreter
+        functionF
+        definingInterpreter
 
 execBlock :: Interpreter -> [SomeStmt] -> InterpreterOutput Interpreter
 execBlock = foldM interpret
 
 interpretExpr :: Interpreter -> Expr -> InterpreterOutput (SomeValue, Interpreter)
-interpretExpr interp (Call callee paren argExprs) = do
-  (val, callerInterp) <- interpretExpr interp callee
-  (args, argsInterp) <- interpretExprs callerInterp argExprs
-  case val of
-    (SomeValue function@VFunction{}) -> callFunction argsInterp args function
+interpretExpr interpreter (Call callee leftParenthesis argumentExpressions) = do
+  (value, callerInterp) <- interpretExpr interpreter callee
+  (arguments, argumentsInterp) <- interpretExprs callerInterp argumentExpressions
+  case value of
+    (SomeValue function@VFunction{}) -> callFunction argumentsInterp arguments function
     (SomeValue (VClass className _ classMethods)) ->
-      let (inst, instInterp) = newInstance className classMethods argsInterp
+      let (inst, instanceInterpreter) = newInstance className classMethods argumentsInterp
        in case classMethods Map.!? "init" of
             Nothing ->
-              if null args
-                then return (SomeValue inst, instInterp)
-                else throwRuntimeError $ runtimeError paren $ "Expected 0 arguments but got " ++ show (length args) ++ "."
-            Just initializer@(VFunction _ _ _ _ funcInterp _ _) ->
-              callFunction (assignThis inst funcInterp instInterp) args initializer
-    _ -> throwRuntimeError $ runtimeError paren "Can only call functions and classes."
+              if null arguments
+                then return (SomeValue inst, instanceInterpreter)
+                else
+                  throwRuntimeError $
+                    runtimeError leftParenthesis $
+                      "Expected 0 arguments but got " ++ show (length arguments) ++ "."
+            Just initializer@(VFunction _ _ _ _ functionInterpreter _ _) ->
+              callFunction (assignThis inst functionInterpreter instanceInterpreter) arguments initializer
+    _ -> throwRuntimeError $ runtimeError leftParenthesis "Can only call functions and classes."
  where
   callFunction :: Interpreter -> [SomeValue] -> Value 'ValueFunction -> InterpreterOutput (SomeValue, Interpreter)
-  callFunction callInterp args (VFunction params _ _ isInitializer _ func _) =
-    if length params == length args
+  callFunction callingInterpreter argument (VFunction parameters _ _ isInitializer _ function _) =
+    if length parameters == length argument
       then do
-        (outputVal, outputInterp) <- lift $ func callInterp args
+        (outputValue, outputInterpreter) <- lift $ function callingInterpreter argument
         return
           ( if isInitializer
-              then getAt outputInterp 1 "this"
-              else outputVal
-          , restoreRunningEnv interp outputInterp
+              then getAt outputInterpreter 1 "this"
+              else outputValue
+          , restoreRunningEnv interpreter outputInterpreter
           )
       else
         throwRuntimeError
           $ runtimeError
-            paren
-          $ "Expected " ++ show (length params) ++ " arguments but got " ++ show (length args) ++ "."
+            leftParenthesis
+          $ "Expected " ++ show (length parameters) ++ " arguments but got " ++ show (length argument) ++ "."
   interpretExprs :: Interpreter -> [Expr] -> InterpreterOutput ([SomeValue], Interpreter)
-  interpretExprs argsInterp [] = return ([], argsInterp)
-  interpretExprs argsInterp (expr : exprs) = do
-    (val, interp') <- interpretExpr argsInterp expr
-    (params, afterParamsInterp) <- interpretExprs interp' exprs
-    return (val : params, afterParamsInterp)
-interpretExpr interp expr@(Assign name value) = do
-  (val, interp') <- interpretExpr interp value
-  assignedInterp <- assign interp' expr name val
-  return (val, assignedInterp)
-interpretExpr interp (Binary left operator right) = do
-  (leftVal, afterLeftInterp) <- interpretExpr interp left
-  (rightVal, afterRightInterp) <- interpretExpr afterLeftInterp right
-  output <- getOutput leftVal rightVal
+  interpretExprs argumentsInterpreter [] = return ([], argumentsInterpreter)
+  interpretExprs argumentsInterpreter (expr : exprs) = do
+    (value, interpreter') <- interpretExpr argumentsInterpreter expr
+    (parameters, afterParametersInterpreter) <- interpretExprs interpreter' exprs
+    return (value : parameters, afterParametersInterpreter)
+interpretExpr interpreter expr@(Assign name assigningExpression) = do
+  (value, afterExpressionInterpreter) <- interpretExpr interpreter assigningExpression
+  assignedInterpeter <- assign afterExpressionInterpreter expr name value
+  return (value, assignedInterpeter)
+interpretExpr interpreter (Binary left operator right) = do
+  (leftValue, afterLeftInterp) <- interpretExpr interpreter left
+  (rightValue, afterRightInterp) <- interpretExpr afterLeftInterp right
+  output <- getOutput leftValue rightValue
   return (output, afterRightInterp)
  where
   getOutput :: SomeValue -> SomeValue -> InterpreterOutput SomeValue
-  getOutput leftVal rightVal
+  getOutput leftValue rightValue
     | tokenType operator `elem` [BANG_EQUAL, EQUAL_EQUAL] =
         return $
           SomeValue $
             VBoolean
               ( if tokenType operator == EQUAL_EQUAL
-                  then leftVal == rightVal
-                  else leftVal /= rightVal
+                  then leftValue == rightValue
+                  else leftValue /= rightValue
               )
-    | tokenType operator == PLUS = plusOperator leftVal rightVal operator
+    | tokenType operator == PLUS = plusOperator leftValue rightValue operator
     | Map.member (tokenType operator) numericBinaryTable = do
-        (leftNumber, rightNumber) <- toNumberPair leftVal rightVal operator
+        (leftNumber, rightNumber) <- toNumberPair leftValue rightValue operator
         return $ SomeValue $ VNumber $ (numericBinaryTable Map.! tokenType operator) leftNumber rightNumber
     | otherwise = do
-        (leftNumber, rightNumber) <- toNumberPair leftVal rightVal operator
+        (leftNumber, rightNumber) <- toNumberPair leftValue rightValue operator
         return $ SomeValue $ VBoolean $ (booleanBinaryTable Map.! tokenType operator) leftNumber rightNumber
   booleanBinaryTable =
     Map.fromList
@@ -172,72 +188,73 @@ interpretExpr interp (Binary left operator right) = do
       , (SLASH, (/))
       , (MINUS, (-))
       ]
-interpretExpr interp (Unary operator expr) = do
-  (val, interp') <- interpretExpr interp expr
-  (unaryOpTable Map.! tokenType operator) val interp'
+interpretExpr interpreter (Unary operator expr) = do
+  (value, afterExpressionInterpreter) <- interpretExpr interpreter expr
+  (unaryOpTable Map.! tokenType operator) value afterExpressionInterpreter
  where
   unaryOpTable =
     Map.fromList
-      [ (BANG, \val interp' -> return (SomeValue $ VBoolean $ not $ isTruthy val, interp'))
+      [ (BANG, \value interpreter' -> return (SomeValue $ VBoolean $ not $ isTruthy value, interpreter'))
       ,
         ( MINUS
-        , \val interp' -> do
+        , \val interpreter' -> do
             n <- toNumber val operator
-            return (SomeValue $ VNumber $ -n, interp')
+            return (SomeValue $ VNumber $ -n, interpreter')
         )
       ]
-interpretExpr interp (Grouping expr) = interpretExpr interp expr
-interpretExpr interp expr@(Variable tok) = do
-  value <- lookupVariable interp tok expr
-  return (value, interp)
-interpretExpr interp (AndExpr left _ right) = do
-  (val, interp') <- interpretExpr interp left
-  if not $ isTruthy val
-    then return (val, interp')
-    else interpretExpr interp' right
-interpretExpr interp (OrExpr left _ right) = do
-  (val, interp') <- interpretExpr interp left
-  if isTruthy val
-    then return (val, interp')
-    else interpretExpr interp' right
-interpretExpr interp (Primary lit) = return (fromLiteral lit, interp)
-interpretExpr interp (Get object name) = do
-  (interpretedObject, interp') <- interpretExpr interp object
-  getFieldOrMethod interp' name interpretedObject
-interpretExpr interp (Set object name value) = do
-  (interpretedObject, interp') <- interpretExpr interp object
+interpretExpr interpreter (Grouping expr) = interpretExpr interpreter expr
+interpretExpr interpreter expr@(Variable token) = do
+  value <- lookupVariable interpreter token expr
+  return (value, interpreter)
+interpretExpr interpreter (AndExpr left _ right) = do
+  (value, afterLeftExpressionInterpreter) <- interpretExpr interpreter left
+  if not $ isTruthy value
+    then return (value, afterLeftExpressionInterpreter)
+    else interpretExpr afterLeftExpressionInterpreter right
+interpretExpr interpreter (OrExpr left _ right) = do
+  (value, afterLeftExpressionInterpreter) <- interpretExpr interpreter left
+  if isTruthy value
+    then return (value, afterLeftExpressionInterpreter)
+    else interpretExpr afterLeftExpressionInterpreter right
+interpretExpr interpreter (Primary singleLiteral) = return (fromLiteral singleLiteral, interpreter)
+interpretExpr interpreter (Get object name) = do
+  (interpretedObject, interpreter') <- interpretExpr interpreter object
+  getFieldOrMethod interpreter' name interpretedObject
+interpretExpr interpreter (Set object name value) = do
+  (interpretedObject, interpreter') <- interpretExpr interpreter object
   case interpretedObject of
     SomeValue (VInstance _ _ _ iid) -> do
-      (interpretedValue, interp'') <- interpretExpr interp' value
-      return (interpretedValue, setProperty iid name interpretedValue interp'')
+      (interpretedValue, interpreter'') <- interpretExpr interpreter' value
+      return (interpretedValue, setProperty iid name interpretedValue interpreter'')
     _ -> throwRuntimeError $ runtimeError name "Only instances have fields."
-interpretExpr interp expr@(This keyword) = do
-  value <- lookupVariable interp keyword expr
-  return (value, interp)
+interpretExpr interpreter expr@(This keyword) = do
+  value <- lookupVariable interpreter keyword expr
+  return (value, interpreter)
 
 getFieldOrMethod :: Interpreter -> Token -> SomeValue -> InterpreterOutput (SomeValue, Interpreter)
-getFieldOrMethod interp name (SomeValue inst@(VInstance _ properties methods _)) =
+getFieldOrMethod interpreter name (SomeValue inst@(VInstance _ properties methods _)) =
   case properties Map.!? lexeme name of
-    Just value -> return (value, interp)
+    Just value -> return (value, interpreter)
     Nothing -> case methods Map.!? lexeme name of
-      Just (VFunction params leftParen fname isInitializer definingInterp func _) ->
-        let interpWithThis = assignThis inst definingInterp interp
-            (method, interpWithMethod) = addFunction params leftParen fname isInitializer definingInterp func interpWithThis
-         in return (SomeValue method, restoreRunningEnv interp interpWithMethod)
+      Just (VFunction params leftParenthesis functionName isInitializer definingInterp function _) ->
+        let interpWithThis = assignThis inst definingInterp interpreter
+            (method, interpWithMethod) =
+              addFunction params leftParenthesis functionName isInitializer definingInterp function interpWithThis
+         in return (SomeValue method, restoreRunningEnv interpreter interpWithMethod)
       Nothing -> throwRuntimeError $ runtimeError name $ "Undefined property '" ++ lexeme name ++ "'."
 getFieldOrMethod _ name _ = throwRuntimeError $ runtimeError name "Only instances have properties."
 
 plusOperator :: SomeValue -> SomeValue -> Token -> InterpreterOutput SomeValue
-plusOperator (SomeValue (VNumber l)) (SomeValue (VNumber r)) _ = return $ SomeValue $ VNumber $ l + r
-plusOperator (SomeValue (VStr l)) (SomeValue (VStr r)) _ = return $ SomeValue $ VStr $ l ++ r
-plusOperator _ _ op = throwRuntimeError $ runtimeError op "Operands must be two numbers or two strings."
+plusOperator (SomeValue (VNumber left)) (SomeValue (VNumber right)) _ = return $ SomeValue $ VNumber $ left + right
+plusOperator (SomeValue (VStr left)) (SomeValue (VStr right)) _ = return $ SomeValue $ VStr $ left ++ right
+plusOperator _ _ operator = throwRuntimeError $ runtimeError operator "Operands must be two numbers or two strings."
 
 toNumberPair :: SomeValue -> SomeValue -> Token -> InterpreterOutput (Double, Double)
-toNumberPair (SomeValue (VNumber l)) (SomeValue (VNumber r)) _ = return (l, r)
-toNumberPair _ _ op = throwRuntimeError $ runtimeError op "Operands must be numbers."
+toNumberPair (SomeValue (VNumber left)) (SomeValue (VNumber right)) _ = return (left, right)
+toNumberPair _ _ operator = throwRuntimeError $ runtimeError operator "Operands must be numbers."
 
 toNumber :: SomeValue -> Token -> InterpreterOutput Double
-toNumber (SomeValue (VNumber n)) _ = return n
+toNumber (SomeValue (VNumber number)) _ = return number
 toNumber _ token = throwRuntimeError $ runtimeError token "Operand must be a number."
 
 isTruthy :: SomeValue -> Bool
@@ -287,18 +304,18 @@ addFunction ::
   (Interpreter -> [SomeValue] -> ExceptT String IO (SomeValue, Interpreter)) ->
   Interpreter ->
   (Value 'ValueFunction, Interpreter)
-addFunction params leftParen fname isInitializer definingInterp func interpreter =
-  let fc = (getFuncCounter . funcCounter $ interpreter)
-   in case fc Map.!? (params, leftParen, fname, isInitializer) of
+addFunction parameters leftParenthesis functionName isInitializer definingInterpreter function interpreter =
+  let functionCounter = (getFuncCounter . funcCounter $ interpreter)
+   in case functionCounter Map.!? (parameters, leftParenthesis, functionName, isInitializer) of
         Nothing ->
-          let newFc = FuncCounter $ Map.insert (params, leftParen, fname, isInitializer) (FunctionID 0) fc
-           in ( VFunction params leftParen fname isInitializer definingInterp func $ FunctionID 0
-              , interpreter{funcCounter = newFc}
+          let newFunctionCounter = FuncCounter $ Map.insert (parameters, leftParenthesis, functionName, isInitializer) (FunctionID 0) functionCounter
+           in ( VFunction parameters leftParenthesis functionName isInitializer definingInterpreter function $ FunctionID 0
+              , interpreter{funcCounter = newFunctionCounter}
               )
         Just (FunctionID count) ->
-          let newFc = FuncCounter $ Map.insert (params, leftParen, fname, isInitializer) (FunctionID $ count + 1) fc
-           in ( VFunction params leftParen fname isInitializer definingInterp func $ FunctionID $ count + 1
-              , interpreter{funcCounter = newFc}
+          let newFunctionCounter = FuncCounter $ Map.insert (parameters, leftParenthesis, functionName, isInitializer) (FunctionID $ count + 1) functionCounter
+           in ( VFunction parameters leftParenthesis functionName isInitializer definingInterpreter function $ FunctionID $ count + 1
+              , interpreter{funcCounter = newFunctionCounter}
               )
 
 defaultInterpreter :: Locals -> Interpreter
@@ -311,9 +328,9 @@ defaultInterpreter localVariables =
           , line = 0
           , lexeme = "clock"
           }
-      clockFunc interp _ = do
+      clockFunc interpreter _ = do
         time <- liftIO getPOSIXTime
-        return (SomeValue $ VNumber (realToFrac time :: Double), interp)
+        return (SomeValue $ VNumber (realToFrac time :: Double), interpreter)
       clock = VFunction [] clockToken "<native fn>" False undefined clockFunc (FunctionID 0)
       globalEnv = Environment (Map.fromList [("clock", SomeValue clock)]) Nothing
       table = Map.fromList [(EnvID 0, globalEnv)]
@@ -365,19 +382,19 @@ assignTok interpreter token value =
                         assignedEnv
                         (environmentTable interpreter)
                   }
-      | Just pEnv <- parent -> do
-          assignedInParent <- assignTok interpreter{currentEnvironment = pEnv} token value
+      | Just parentEnv <- parent -> do
+          assignedInParent <- assignTok interpreter{currentEnvironment = parentEnv} token value
           return $ interpreter{environmentTable = environmentTable assignedInParent}
       | Nothing <- parent ->
           throwRuntimeError $ runtimeError token $ "Undefined variable '" ++ lexeme token ++ "'."
 
 assignThis :: Value 'ValueInstance -> Interpreter -> Interpreter -> Interpreter
-assignThis value (Interpreter _ _ thisInterp _ _ _) interpreter =
-  let Environment variables parent = case environmentTable interpreter Map.!? thisInterp of
+assignThis value (Interpreter _ _ toDefineIn _ _ _) interpreter =
+  let Environment variables parent = case environmentTable interpreter Map.!? toDefineIn of
         Nothing -> error "here"
         Just e -> e
       env = Environment (Map.insert "this" (SomeValue value) variables) parent
-   in interpreter{environmentTable = Map.insert thisInterp env $ environmentTable interpreter}
+   in interpreter{environmentTable = Map.insert toDefineIn env $ environmentTable interpreter}
 
 assign :: Interpreter -> Expr -> Token -> SomeValue -> InterpreterOutput Interpreter
 assign interpreter expr name value =
@@ -386,20 +403,20 @@ assign interpreter expr name value =
     Just distance -> assignAt interpreter distance name value
 
 assignAt :: Interpreter -> Int -> Token -> SomeValue -> InterpreterOutput Interpreter
-assignAt interpreter distance name val =
+assignAt interpreter distance name value =
   let ancestorId = ancestor distance interpreter $ currentEnvironment interpreter
       Environment envTable parent = fromMaybe (error "in assignAt") (environmentTable interpreter Map.!? ancestorId)
       newTable =
         Map.insert
           ancestorId
-          (Environment (Map.insert (lexeme name) val envTable) parent)
+          (Environment (Map.insert (lexeme name) value envTable) parent)
           (environmentTable interpreter)
    in return interpreter{environmentTable = newTable}
 
 assignGlobal :: Interpreter -> Token -> SomeValue -> InterpreterOutput Interpreter
 assignGlobal interpreter token value =
-  let Environment globalTable pEnv = environmentTable interpreter Map.! EnvID 0
-      newGlobalEnv = Environment (Map.insert (lexeme token) value globalTable) pEnv
+  let Environment globalTable parentEnv = environmentTable interpreter Map.! EnvID 0
+      newGlobalEnv = Environment (Map.insert (lexeme token) value globalTable) parentEnv
    in case globalTable Map.!? lexeme token of
         Just _ ->
           return
@@ -415,7 +432,7 @@ lookupVariable interpreter name expr =
       let Environment envTable _ = environmentTable interpreter Map.! EnvID 0
        in case envTable Map.!? lexeme name of
             Nothing -> throwRuntimeError $ runtimeError name $ "Undefined variable '" ++ lexeme name ++ "'."
-            Just val -> return val
+            Just value -> return value
     Just distance -> return $ getAt interpreter distance $ lexeme name
 
 getAt :: Interpreter -> Int -> String -> SomeValue
@@ -435,7 +452,7 @@ getAt interpreter distance name =
               ++ show (currentEnvironment interpreter)
               ++ "\n\n     interp is "
               ++ show interpreter
-        Just val -> val
+        Just value -> value
 
 ancestor :: Int -> Interpreter -> EnvID -> EnvID
 ancestor distance interpreter childId
@@ -459,13 +476,13 @@ newInstance className classMethods interpreter =
       )
 
 setProperty :: InstanceID -> Token -> SomeValue -> Interpreter -> Interpreter
-setProperty iid name val interpreter =
+setProperty iid name value interpreter =
   let mapFunc (SomeValue (VInstance className properties methods otherIid)) =
         if iid == otherIid
-          then SomeValue $ VInstance className (Map.insert (lexeme name) val properties) methods otherIid
+          then SomeValue $ VInstance className (Map.insert (lexeme name) value properties) methods otherIid
           else SomeValue $ VInstance className (Map.map mapFunc properties) methods otherIid
       mapFunc other = other
-      envMap (Environment vars pID) = Environment (Map.map mapFunc vars) pID
+      envMap (Environment variables parentId) = Environment (Map.map mapFunc variables) parentId
    in interpreter{environmentTable = Map.map envMap $ environmentTable interpreter}
 
 data ValueKind
