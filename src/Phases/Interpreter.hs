@@ -99,7 +99,7 @@ functionToValue definingInterpreter isInitializer (Function functionName functio
         functionName
         ("<fn " ++ lexeme functionName ++ ">")
         isInitializer
-        definingInterpreter
+        (currentEnvironment definingInterpreter)
         functionF
         definingInterpreter
 
@@ -122,8 +122,8 @@ interpretExpr interpreter (Call callee leftParenthesis argumentExpressions) = do
                   throwRuntimeError $
                     runtimeError leftParenthesis $
                       "Expected 0 arguments but got " ++ show (length arguments) ++ "."
-            Just initializer@(VFunction _ _ _ _ functionInterpreter _ _) ->
-              callFunction (assignThis inst functionInterpreter instanceInterpreter) arguments initializer
+            Just initializer@(VFunction _ _ _ _ functionEnvironment _ _) ->
+              callFunction (assignThis inst functionEnvironment instanceInterpreter) arguments initializer
     _ -> throwRuntimeError $ runtimeError leftParenthesis "Can only call functions and classes."
  where
   callFunction :: Interpreter -> [SomeValue] -> Value 'ValueFunction -> InterpreterOutput (SomeValue, Interpreter)
@@ -236,10 +236,10 @@ getFieldOrMethod interpreter name (SomeValue inst@(VInstance _ properties method
   case properties Map.!? lexeme name of
     Just value -> return (value, interpreter)
     Nothing -> case methods Map.!? lexeme name of
-      Just (VFunction params leftParenthesis functionName isInitializer definingInterp function _) ->
-        let interpWithThis = assignThis inst definingInterp interpreter
+      Just (VFunction params leftParenthesis functionName isInitializer definingEnvironment function _) ->
+        let interpWithThis = assignThis inst definingEnvironment interpreter
             (method, interpWithMethod) =
-              addFunction params leftParenthesis functionName isInitializer definingInterp function interpWithThis
+              addFunction params leftParenthesis functionName isInitializer definingEnvironment function interpWithThis
          in return (SomeValue method, restoreRunningEnv interpreter interpWithMethod)
       Nothing -> throwRuntimeError $ runtimeError name $ "Undefined property '" ++ lexeme name ++ "'."
 getFieldOrMethod _ name _ = throwRuntimeError $ runtimeError name "Only instances have properties."
@@ -300,7 +300,7 @@ addFunction ::
   Token ->
   String ->
   Bool ->
-  Interpreter ->
+  EnvID ->
   (Interpreter -> [SomeValue] -> ExceptT String IO (SomeValue, Interpreter)) ->
   Interpreter ->
   (Value 'ValueFunction, Interpreter)
@@ -388,8 +388,8 @@ assignTok interpreter token value =
       | Nothing <- parent ->
           throwRuntimeError $ runtimeError token $ "Undefined variable '" ++ lexeme token ++ "'."
 
-assignThis :: Value 'ValueInstance -> Interpreter -> Interpreter -> Interpreter
-assignThis value (Interpreter _ _ toDefineIn _ _ _) interpreter =
+assignThis :: Value 'ValueInstance -> EnvID -> Interpreter -> Interpreter
+assignThis value toDefineIn interpreter =
   let Environment variables parent = case environmentTable interpreter Map.!? toDefineIn of
         Nothing -> error "here"
         Just e -> e
@@ -520,7 +520,7 @@ data Value (k :: ValueKind) where
   VBoolean :: Bool -> Value 'ValueBoolean
   VNil :: Value 'ValueNil
   VCall :: Int -> Token -> String -> Value 'ValueCall
-  VFunction :: [Token] -> Token -> String -> Bool -> Interpreter -> (Interpreter -> [SomeValue] -> ExceptT String IO (SomeValue, Interpreter)) -> FunctionID -> Value 'ValueFunction
+  VFunction :: [Token] -> Token -> String -> Bool -> EnvID -> (Interpreter -> [SomeValue] -> ExceptT String IO (SomeValue, Interpreter)) -> FunctionID -> Value 'ValueFunction
   VClass :: String -> Int -> (Map.Map String (Value 'ValueFunction)) -> Value 'ValueClass
   VInstance :: String -> (Map.Map String SomeValue) -> (Map.Map String (Value 'ValueFunction)) -> InstanceID -> Value 'ValueInstance
 
