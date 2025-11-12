@@ -356,7 +356,7 @@ assignTok token value = do
         put interpreter{currentEnvironment = currentEnvironment interpreter}
       Nothing -> throwRuntimeError $ runtimeError token $ "Undefined variable '" ++ lexeme token ++ "'."
 
-assignThis :: Value 'ValueInstance -> EnvID -> InterpreterOutput ()
+assignThis :: (MonadState Interpreter m) => Value 'ValueInstance -> EnvID -> m ()
 assignThis value toDefineIn = do
   interpreter <- get
   let Environment variables parent = case environmentTable interpreter Map.!? toDefineIn of
