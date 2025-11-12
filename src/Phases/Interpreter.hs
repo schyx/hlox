@@ -46,9 +46,7 @@ throwRuntimeError :: String -> InterpreterOutput a
 throwRuntimeError = lift . throwError
 
 interpret :: SomeStmt -> InterpreterOutput ()
-interpret (SomeStmt (Print expr)) = do
-  value <- interpretExpr expr
-  liftIO $ print value
+interpret (SomeStmt (Print expr)) = interpretExpr expr >>= liftIO . print
 interpret (SomeStmt (Expression expr)) = void $ interpretExpr expr
 interpret (SomeStmt (Var name initializer)) = interpretExpr initializer >>= define name
 interpret (SomeStmt (Block stmts)) = createChildEnv >> execBlock stmts >> changeToParent
@@ -61,8 +59,7 @@ interpret (SomeStmt (If condition ifBranch Nothing)) = do
 interpret stmt@(SomeStmt (While condition whileBlock)) = do
   value <- interpretExpr condition
   when (isTruthy value) (interpret whileBlock >> interpret stmt)
-interpret (SomeStmt function@(Function functionName _ _)) =
-  functionToValue False function >>= define functionName . SomeValue
+interpret (SomeStmt function@(Function functionName _ _)) = functionToValue False function >>= define functionName . SomeValue
 interpret (SomeStmt (Return _ Nothing)) = throwError $ SomeValue VNil
 interpret (SomeStmt (Return _ (Just value))) = interpretExpr value >>= throwError
 interpret (SomeStmt (Class name classMethods)) = do
@@ -175,9 +172,7 @@ interpretExpr (Binary left operator right) = do
         return $ SomeValue $ VBoolean $ (booleanBinaryTable Map.! tokenType operator) leftNumber rightNumber
   booleanBinaryTable = Map.fromList [(LESS, (<)), (LESS_EQUAL, (<=)), (GREATER, (>)), (GREATER_EQUAL, (>=))]
   numericBinaryTable = Map.fromList [(STAR, (*)), (SLASH, (/)), (MINUS, (-))]
-interpretExpr (Unary operator expr) = do
-  value <- interpretExpr expr
-  (unaryOpTable Map.! tokenType operator) value
+interpretExpr (Unary operator expr) = interpretExpr expr >>= unaryOpTable Map.! tokenType operator
  where
   unaryOpTable =
     Map.fromList
