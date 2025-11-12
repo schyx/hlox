@@ -173,19 +173,8 @@ interpretExpr (Binary left operator right) = do
     | otherwise = do
         (leftNumber, rightNumber) <- toNumberPair leftValue rightValue operator
         return $ SomeValue $ VBoolean $ (booleanBinaryTable Map.! tokenType operator) leftNumber rightNumber
-  booleanBinaryTable =
-    Map.fromList
-      [ (LESS, (<))
-      , (LESS_EQUAL, (<=))
-      , (GREATER, (>))
-      , (GREATER_EQUAL, (>=))
-      ]
-  numericBinaryTable =
-    Map.fromList
-      [ (STAR, (*))
-      , (SLASH, (/))
-      , (MINUS, (-))
-      ]
+  booleanBinaryTable = Map.fromList [(LESS, (<)), (LESS_EQUAL, (<=)), (GREATER, (>)), (GREATER_EQUAL, (>=))]
+  numericBinaryTable = Map.fromList [(STAR, (*)), (SLASH, (/)), (MINUS, (-))]
 interpretExpr (Unary operator expr) = do
   value <- interpretExpr expr
   (unaryOpTable Map.! tokenType operator) value
@@ -193,16 +182,10 @@ interpretExpr (Unary operator expr) = do
   unaryOpTable =
     Map.fromList
       [ (BANG, return . SomeValue . VBoolean . not . isTruthy)
-      ,
-        ( MINUS
-        , \val -> do
-            n <- toNumber val operator
-            return $ SomeValue $ VNumber $ -n
-        )
+      , (MINUS, \val -> SomeValue . VNumber . (* (-1)) <$> toNumber val operator)
       ]
 interpretExpr (Grouping expr) = interpretExpr expr
-interpretExpr expr@(Variable token) = do
-  lookupVariable token expr
+interpretExpr expr@(Variable token) = lookupVariable token expr
 interpretExpr (AndExpr left _ right) = do
   value <- interpretExpr left
   if not $ isTruthy value
@@ -214,9 +197,7 @@ interpretExpr (OrExpr left _ right) = do
     then return value
     else interpretExpr right
 interpretExpr (Primary singleLiteral) = return $ fromLiteral singleLiteral
-interpretExpr (Get object name) = do
-  interpretedObject <- interpretExpr object
-  getFieldOrMethod name interpretedObject
+interpretExpr (Get object name) = interpretExpr object >>= getFieldOrMethod name
 interpretExpr (Set object name value) = do
   interpretedObject <- interpretExpr object
   case interpretedObject of
@@ -234,8 +215,7 @@ getFieldOrMethod name (SomeValue inst@(VInstance _ properties methods _)) =
     Nothing -> case methods Map.!? lexeme name of
       Just (VFunction params leftParenthesis functionName isInitializer definingEnvironment function _) -> do
         assignThis inst definingEnvironment
-        method <- addFunction params leftParenthesis functionName isInitializer definingEnvironment function
-        return $ SomeValue method
+        SomeValue <$> addFunction params leftParenthesis functionName isInitializer definingEnvironment function
       Nothing -> throwRuntimeError $ runtimeError name $ "Undefined property '" ++ lexeme name ++ "'."
 getFieldOrMethod name _ = throwRuntimeError $ runtimeError name "Only instances have properties."
 
