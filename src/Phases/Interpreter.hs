@@ -50,9 +50,7 @@ interpret (SomeStmt (Print expr)) = do
   value <- interpretExpr expr
   liftIO $ print value
 interpret (SomeStmt (Expression expr)) = void $ interpretExpr expr
-interpret (SomeStmt (Var name initializer)) = do
-  value <- interpretExpr initializer
-  define name value
+interpret (SomeStmt (Var name initializer)) = interpretExpr initializer >>= define name
 interpret (SomeStmt (Block stmts)) = createChildEnv >> execBlock stmts >> changeToParent
 interpret (SomeStmt (If condition ifBranch (Just elseBranch))) = do
   value <- interpretExpr condition
@@ -65,10 +63,8 @@ interpret stmt@(SomeStmt (While condition whileBlock)) = do
   when (isTruthy value) (interpret whileBlock >> interpret stmt)
 interpret (SomeStmt function@(Function functionName _ _)) =
   functionToValue False function >>= define functionName . SomeValue
-interpret (SomeStmt (Return _ returnExpression)) =
-  case returnExpression of
-    Nothing -> throwError $ SomeValue VNil
-    Just value -> interpretExpr value >>= throwError
+interpret (SomeStmt (Return _ Nothing)) = throwError $ SomeValue VNil
+interpret (SomeStmt (Return _ (Just value))) = interpretExpr value >>= throwError
 interpret (SomeStmt (Class name classMethods)) = do
   define name $ SomeValue VNil
   createChildEnv
