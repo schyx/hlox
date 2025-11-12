@@ -1,17 +1,20 @@
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE KindSignatures #-}
 
 module Phases.Interpreter (
+  runInterp,
   interpret,
   interpretExpr,
   defaultInterpreter,
   Interpreter,
 ) where
 
-import Control.Monad (foldM)
+import Control.Monad (foldM, foldM_, void, when)
 import Control.Monad.Except (ExceptT (..), runExceptT, throwError)
 import Control.Monad.IO.Class (liftIO)
+import Control.Monad.State (MonadState (get, put), StateT, runStateT)
 import Control.Monad.Trans.Class (lift)
 import qualified Data.Map as Map
 import Data.Maybe (fromMaybe)
@@ -21,79 +24,84 @@ import Numeric (showFFloat)
 import Phases.Expr
 import Phases.Resolver (Locals (resolverMap))
 import Phases.Stmt
+import System.IO (hPutStrLn, stderr)
 import Tokens
 
-type InterpreterOutput a = ExceptT (SomeValue, Interpreter) (ExceptT String IO) a
+runInterp :: Interpreter -> SomeStmt -> IO (Either String Interpreter)
+runInterp startInterpreter stmt = do
+  intermediate <- runExceptT $ runStateT (runExceptT runStmt) startInterpreter
+  case intermediate of
+    Left err -> do
+      hPutStrLn stderr err
+      return $ Left err
+    Right (_, interpreter) -> return $ Right interpreter
+ where
+  runStmt :: InterpreterOutput ()
+  runStmt = do
+    interpret stmt
+
+type InterpreterOutput a = ExceptT SomeValue (StateT Interpreter (ExceptT String IO)) a
 
 throwRuntimeError :: String -> InterpreterOutput a
 throwRuntimeError = lift . throwError
 
-interpret :: Interpreter -> SomeStmt -> InterpreterOutput Interpreter
-interpret interpreter (SomeStmt (Print expr)) = do
-  (val, interp') <- interpretExpr interpreter expr
-  liftIO $ print val
-  return interp'
-interpret interpreter (SomeStmt (Expression expr)) = do
-  (_, interp') <- interpretExpr interpreter expr
-  return interp'
-interpret interpreter (SomeStmt (Var name initializer)) = do
-  (val, interp') <- interpretExpr interpreter initializer
-  return $ define interp' name val
-interpret interpreter (SomeStmt (Block stmts)) = do
-  let interp' = createChildEnv interpreter
-  interp'' <- execBlock interp' stmts
-  return $ changeToParent interp''
-interpret interpreter (SomeStmt (If condition ifBranch (Just elseBranch))) = do
-  (val, interp') <- interpretExpr interpreter condition
-  interpret interp' (if isTruthy val then ifBranch else elseBranch)
-interpret interpreter (SomeStmt (If condition ifBranch Nothing)) = do
-  (val, interp') <- interpretExpr interpreter condition
-  if isTruthy val then interpret interp' ifBranch else return interp'
-interpret interpreter (SomeStmt (While condition whileBlock)) = do
-  (value, interpreter') <- interpretExpr interpreter condition
-  if isTruthy value
-    then do
-      interpreter'' <- interpret interpreter' whileBlock
-      interpret interpreter'' (SomeStmt (While condition whileBlock))
-    else return interpreter'
-interpret interpreter (SomeStmt function@(Function functionName _ _)) =
-  let (functionObject, interpreter') = functionToValue interpreter False function
-   in return $ define interpreter' functionName $ SomeValue functionObject
-interpret interpreter (SomeStmt (Return _ returnExpression)) =
+interpret :: SomeStmt -> InterpreterOutput ()
+interpret (SomeStmt (Print expr)) = do
+  value <- interpretExpr expr
+  liftIO $ print value
+interpret (SomeStmt (Expression expr)) = void $ interpretExpr expr
+interpret (SomeStmt (Var name initializer)) = do
+  value <- interpretExpr initializer
+  define name value
+interpret (SomeStmt (Block stmts)) = createChildEnv >> execBlock stmts >> changeToParent
+interpret (SomeStmt (If condition ifBranch (Just elseBranch))) = do
+  value <- interpretExpr condition
+  interpret (if isTruthy value then ifBranch else elseBranch)
+interpret (SomeStmt (If condition ifBranch Nothing)) = do
+  value <- interpretExpr condition
+  when (isTruthy value) (interpret ifBranch)
+interpret stmt@(SomeStmt (While condition whileBlock)) = do
+  value <- interpretExpr condition
+  when (isTruthy value) (interpret whileBlock >> interpret stmt)
+interpret (SomeStmt function@(Function functionName _ _)) =
+  functionToValue False function >>= define functionName . SomeValue
+interpret (SomeStmt (Return _ returnExpression)) =
   case returnExpression of
-    Nothing -> throwError (SomeValue VNil, interpreter)
-    Just value -> do
-      (returnValue, interpreter') <- interpretExpr interpreter value
-      throwError (returnValue, interpreter')
-interpret interpreter (SomeStmt (Class name classMethods)) =
-  let interpreter' = define interpreter name $ SomeValue VNil
-      foldFunc function@(Function functionName _ _) =
-        Map.insert
-          (lexeme functionName)
-          (fst $ functionToValue (createChildEnv interpreter) (lexeme functionName == "init") function)
-      methods = foldr foldFunc Map.empty classMethods
-      arity = case methods Map.!? "init" of
-        Nothing -> 0
-        Just (VFunction numArgs _ _ _ _ _ _) -> length numArgs
-      klass = SomeValue $ VClass (lexeme name) arity methods
-   in do
-        interpreter'' <- assignTok interpreter' name klass
-        return (restoreRunningEnv interpreter'' $ createChildEnv interpreter'')
+    Nothing -> throwError $ SomeValue VNil
+    Just value -> interpretExpr value >>= throwError
+interpret (SomeStmt (Class name classMethods)) = do
+  define name $ SomeValue VNil
+  createChildEnv
+  klass <- getKlass
+  changeToParent
+  assignTok name klass
+ where
+  getKlass :: InterpreterOutput SomeValue
+  getKlass = do
+    methods <- getMethods
+    let arity = case methods Map.!? "init" of
+          Nothing -> 0
+          Just (VFunction numArgs _ _ _ _ _ _) -> length numArgs
+    return $ SomeValue $ VClass (lexeme name) arity methods
+  foldMFunc :: Map.Map String (Value 'ValueFunction) -> Stmt 'KFunction -> InterpreterOutput (Map.Map String (Value 'ValueFunction))
+  foldMFunc buildup method@(Function methodName _ _) = do
+    methodObject <- functionToValue (lexeme methodName == "init") method
+    return $ Map.insert (lexeme methodName) methodObject buildup
+  getMethods :: InterpreterOutput (Map.Map String (Value 'ValueFunction))
+  getMethods = foldM foldMFunc Map.empty classMethods
 
-functionToValue :: Interpreter -> Bool -> Stmt 'KFunction -> (Value 'ValueFunction, Interpreter)
-functionToValue definingInterpreter isInitializer (Function functionName functionParameters body) =
-  let functionF callingInterpreter args = do
-        let enclosingInterpreter = restoreRunningEnv definingInterpreter callingInterpreter
-        let initialFunctionInterpreter = createChildEnv enclosingInterpreter
-        let functionInterpreter =
-              foldl
-                (\previousInterpreter (token, value) -> define previousInterpreter token value)
-                initialFunctionInterpreter
-                (zip functionParameters args)
-        run <- runExceptT $ execBlock functionInterpreter body
+functionToValue :: Bool -> Stmt 'KFunction -> InterpreterOutput (Value 'ValueFunction)
+functionToValue isInitializer (Function functionName functionParameters body) = do
+  definingInterpreter <- get
+  let functionF :: [SomeValue] -> StateT Interpreter (ExceptT String IO) SomeValue
+      functionF args = do
+        restoreRunningEnv definingInterpreter
+        createChildEnv
+        foldM_ (\_ (token, value) -> define token value) () (zip functionParameters args)
+        run <- runExceptT $ execBlock body
         case run of
-          Left (value, outputInterpreter) -> ExceptT $ return $ Right (value, outputInterpreter)
-          Right outputInterpreter -> ExceptT $ return $ Right (SomeValue VNil, outputInterpreter)
+          Left value -> return value
+          Right () -> return $ SomeValue VNil
    in addFunction
         functionParameters
         functionName
@@ -101,62 +109,56 @@ functionToValue definingInterpreter isInitializer (Function functionName functio
         isInitializer
         (currentEnvironment definingInterpreter)
         functionF
-        definingInterpreter
 
-execBlock :: Interpreter -> [SomeStmt] -> InterpreterOutput Interpreter
-execBlock = foldM interpret
+execBlock :: [SomeStmt] -> InterpreterOutput ()
+execBlock = foldM_ (\_ stmt -> interpret stmt) ()
 
-interpretExpr :: Interpreter -> Expr -> InterpreterOutput (SomeValue, Interpreter)
-interpretExpr interpreter (Call callee leftParenthesis argumentExpressions) = do
-  (value, callerInterp) <- interpretExpr interpreter callee
-  (arguments, argumentsInterp) <- interpretExprs callerInterp argumentExpressions
+interpretExpr :: Expr -> InterpreterOutput SomeValue
+interpretExpr (Call callee leftParenthesis argumentExpressions) = do
+  interpreter <- get
+  value <- interpretExpr callee
+  arguments <- interpretExprs argumentExpressions
   case value of
-    (SomeValue function@VFunction{}) -> callFunction argumentsInterp arguments function
-    (SomeValue (VClass className _ classMethods)) ->
-      let (inst, instanceInterpreter) = newInstance className classMethods argumentsInterp
-       in case classMethods Map.!? "init" of
-            Nothing ->
-              if null arguments
-                then return (SomeValue inst, instanceInterpreter)
-                else
-                  throwRuntimeError $
-                    runtimeError leftParenthesis $
-                      "Expected 0 arguments but got " ++ show (length arguments) ++ "."
-            Just initializer@(VFunction _ _ _ _ functionEnvironment _ _) ->
-              callFunction (assignThis inst functionEnvironment instanceInterpreter) arguments initializer
+    (SomeValue function@VFunction{}) -> callFunction interpreter arguments function
+    (SomeValue (VClass className _ classMethods)) -> do
+      inst <- newInstance className classMethods
+      case classMethods Map.!? "init" of
+        Nothing ->
+          if null arguments
+            then return $ SomeValue inst
+            else throwRuntimeError $ runtimeError leftParenthesis $ "Expected 0 arguments but got " ++ show (length arguments) ++ "."
+        Just initializer@(VFunction _ _ _ _ functionEnvironment _ _) -> do
+          assignThis inst functionEnvironment
+          callFunction interpreter arguments initializer
     _ -> throwRuntimeError $ runtimeError leftParenthesis "Can only call functions and classes."
  where
-  callFunction :: Interpreter -> [SomeValue] -> Value 'ValueFunction -> InterpreterOutput (SomeValue, Interpreter)
-  callFunction callingInterpreter argument (VFunction parameters _ _ isInitializer _ function _) =
+  callFunction :: Interpreter -> [SomeValue] -> Value 'ValueFunction -> InterpreterOutput SomeValue
+  callFunction interpreter argument (VFunction parameters _ _ isInitializer _ function _) =
     if length parameters == length argument
       then do
-        (outputValue, outputInterpreter) <- lift $ function callingInterpreter argument
-        return
-          ( if isInitializer
-              then getAt outputInterpreter 1 "this"
-              else outputValue
-          , restoreRunningEnv interpreter outputInterpreter
-          )
+        outputValue <- lift $ function argument
+        output <- if isInitializer then getAt 1 "this" else return outputValue
+        restoreRunningEnv interpreter
+        return output
       else
         throwRuntimeError
           $ runtimeError
             leftParenthesis
           $ "Expected " ++ show (length parameters) ++ " arguments but got " ++ show (length argument) ++ "."
-  interpretExprs :: Interpreter -> [Expr] -> InterpreterOutput ([SomeValue], Interpreter)
-  interpretExprs argumentsInterpreter [] = return ([], argumentsInterpreter)
-  interpretExprs argumentsInterpreter (expr : exprs) = do
-    (value, interpreter') <- interpretExpr argumentsInterpreter expr
-    (parameters, afterParametersInterpreter) <- interpretExprs interpreter' exprs
-    return (value : parameters, afterParametersInterpreter)
-interpretExpr interpreter expr@(Assign name assigningExpression) = do
-  (value, afterExpressionInterpreter) <- interpretExpr interpreter assigningExpression
-  assignedInterpeter <- assign afterExpressionInterpreter expr name value
-  return (value, assignedInterpeter)
-interpretExpr interpreter (Binary left operator right) = do
-  (leftValue, afterLeftInterp) <- interpretExpr interpreter left
-  (rightValue, afterRightInterp) <- interpretExpr afterLeftInterp right
-  output <- getOutput leftValue rightValue
-  return (output, afterRightInterp)
+  interpretExprs :: [Expr] -> InterpreterOutput [SomeValue] -- TODO maybe try using fold?
+  interpretExprs [] = return []
+  interpretExprs (expr : exprs) = do
+    value <- interpretExpr expr
+    values <- interpretExprs exprs
+    return $ value : values
+interpretExpr expr@(Assign name assigningExpression) = do
+  value <- interpretExpr assigningExpression
+  assign expr name value
+  return value
+interpretExpr (Binary left operator right) = do
+  leftValue <- interpretExpr left
+  rightValue <- interpretExpr right
+  getOutput leftValue rightValue
  where
   getOutput :: SomeValue -> SomeValue -> InterpreterOutput SomeValue
   getOutput leftValue rightValue
@@ -188,61 +190,58 @@ interpretExpr interpreter (Binary left operator right) = do
       , (SLASH, (/))
       , (MINUS, (-))
       ]
-interpretExpr interpreter (Unary operator expr) = do
-  (value, afterExpressionInterpreter) <- interpretExpr interpreter expr
-  (unaryOpTable Map.! tokenType operator) value afterExpressionInterpreter
+interpretExpr (Unary operator expr) = do
+  value <- interpretExpr expr
+  (unaryOpTable Map.! tokenType operator) value
  where
   unaryOpTable =
     Map.fromList
-      [ (BANG, \value interpreter' -> return (SomeValue $ VBoolean $ not $ isTruthy value, interpreter'))
+      [ (BANG, return . SomeValue . VBoolean . not . isTruthy)
       ,
         ( MINUS
-        , \val interpreter' -> do
+        , \val -> do
             n <- toNumber val operator
-            return (SomeValue $ VNumber $ -n, interpreter')
+            return $ SomeValue $ VNumber $ -n
         )
       ]
-interpretExpr interpreter (Grouping expr) = interpretExpr interpreter expr
-interpretExpr interpreter expr@(Variable token) = do
-  value <- lookupVariable interpreter token expr
-  return (value, interpreter)
-interpretExpr interpreter (AndExpr left _ right) = do
-  (value, afterLeftExpressionInterpreter) <- interpretExpr interpreter left
+interpretExpr (Grouping expr) = interpretExpr expr
+interpretExpr expr@(Variable token) = do
+  lookupVariable token expr
+interpretExpr (AndExpr left _ right) = do
+  value <- interpretExpr left
   if not $ isTruthy value
-    then return (value, afterLeftExpressionInterpreter)
-    else interpretExpr afterLeftExpressionInterpreter right
-interpretExpr interpreter (OrExpr left _ right) = do
-  (value, afterLeftExpressionInterpreter) <- interpretExpr interpreter left
+    then return value
+    else interpretExpr right
+interpretExpr (OrExpr left _ right) = do
+  value <- interpretExpr left
   if isTruthy value
-    then return (value, afterLeftExpressionInterpreter)
-    else interpretExpr afterLeftExpressionInterpreter right
-interpretExpr interpreter (Primary singleLiteral) = return (fromLiteral singleLiteral, interpreter)
-interpretExpr interpreter (Get object name) = do
-  (interpretedObject, interpreter') <- interpretExpr interpreter object
-  getFieldOrMethod interpreter' name interpretedObject
-interpretExpr interpreter (Set object name value) = do
-  (interpretedObject, interpreter') <- interpretExpr interpreter object
+    then return value
+    else interpretExpr right
+interpretExpr (Primary singleLiteral) = return $ fromLiteral singleLiteral
+interpretExpr (Get object name) = do
+  interpretedObject <- interpretExpr object
+  getFieldOrMethod name interpretedObject
+interpretExpr (Set object name value) = do
+  interpretedObject <- interpretExpr object
   case interpretedObject of
     SomeValue (VInstance _ _ _ iid) -> do
-      (interpretedValue, interpreter'') <- interpretExpr interpreter' value
-      return (interpretedValue, setProperty iid name interpretedValue interpreter'')
+      interpretedValue <- interpretExpr value
+      setProperty iid name interpretedValue
+      return interpretedValue
     _ -> throwRuntimeError $ runtimeError name "Only instances have fields."
-interpretExpr interpreter expr@(This keyword) = do
-  value <- lookupVariable interpreter keyword expr
-  return (value, interpreter)
+interpretExpr expr@(This keyword) = lookupVariable keyword expr
 
-getFieldOrMethod :: Interpreter -> Token -> SomeValue -> InterpreterOutput (SomeValue, Interpreter)
-getFieldOrMethod interpreter name (SomeValue inst@(VInstance _ properties methods _)) =
+getFieldOrMethod :: Token -> SomeValue -> InterpreterOutput SomeValue
+getFieldOrMethod name (SomeValue inst@(VInstance _ properties methods _)) =
   case properties Map.!? lexeme name of
-    Just value -> return (value, interpreter)
+    Just value -> return value
     Nothing -> case methods Map.!? lexeme name of
-      Just (VFunction params leftParenthesis functionName isInitializer definingEnvironment function _) ->
-        let interpWithThis = assignThis inst definingEnvironment interpreter
-            (method, interpWithMethod) =
-              addFunction params leftParenthesis functionName isInitializer definingEnvironment function interpWithThis
-         in return (SomeValue method, restoreRunningEnv interpreter interpWithMethod)
+      Just (VFunction params leftParenthesis functionName isInitializer definingEnvironment function _) -> do
+        assignThis inst definingEnvironment
+        method <- addFunction params leftParenthesis functionName isInitializer definingEnvironment function
+        return $ SomeValue method
       Nothing -> throwRuntimeError $ runtimeError name $ "Undefined property '" ++ lexeme name ++ "'."
-getFieldOrMethod _ name _ = throwRuntimeError $ runtimeError name "Only instances have properties."
+getFieldOrMethod name _ = throwRuntimeError $ runtimeError name "Only instances have properties."
 
 plusOperator :: SomeValue -> SomeValue -> Token -> InterpreterOutput SomeValue
 plusOperator (SomeValue (VNumber left)) (SomeValue (VNumber right)) _ = return $ SomeValue $ VNumber $ left + right
@@ -301,22 +300,25 @@ addFunction ::
   String ->
   Bool ->
   EnvID ->
-  (Interpreter -> [SomeValue] -> ExceptT String IO (SomeValue, Interpreter)) ->
-  Interpreter ->
-  (Value 'ValueFunction, Interpreter)
-addFunction parameters leftParenthesis functionName isInitializer definingInterpreter function interpreter =
-  let functionCounter = (getFuncCounter . funcCounter $ interpreter)
-   in case functionCounter Map.!? (parameters, leftParenthesis, functionName, isInitializer) of
-        Nothing ->
-          let newFunctionCounter = FuncCounter $ Map.insert (parameters, leftParenthesis, functionName, isInitializer) (FunctionID 0) functionCounter
-           in ( VFunction parameters leftParenthesis functionName isInitializer definingInterpreter function $ FunctionID 0
-              , interpreter{funcCounter = newFunctionCounter}
-              )
-        Just (FunctionID count) ->
-          let newFunctionCounter = FuncCounter $ Map.insert (parameters, leftParenthesis, functionName, isInitializer) (FunctionID $ count + 1) functionCounter
-           in ( VFunction parameters leftParenthesis functionName isInitializer definingInterpreter function $ FunctionID $ count + 1
-              , interpreter{funcCounter = newFunctionCounter}
-              )
+  ([SomeValue] -> StateT Interpreter (ExceptT String IO) SomeValue) ->
+  InterpreterOutput (Value 'ValueFunction)
+addFunction parameters leftParenthesis functionName isInitializer definingEnvironment function = do
+  interpreter <- get
+  let functionCounter = getFuncCounter . funcCounter $ interpreter
+  case functionCounter Map.!? (parameters, leftParenthesis, functionName, isInitializer) of
+    Nothing -> do
+      let newFunctionCounter = FuncCounter $ Map.insert (parameters, leftParenthesis, functionName, isInitializer) (FunctionID 0) functionCounter
+      put interpreter{funcCounter = newFunctionCounter}
+      return $ VFunction parameters leftParenthesis functionName isInitializer definingEnvironment function $ FunctionID 0
+    Just (FunctionID count) -> do
+      let newFunctionCounter =
+            FuncCounter $
+              Map.insert
+                (parameters, leftParenthesis, functionName, isInitializer)
+                (FunctionID $ count + 1)
+                functionCounter
+      put interpreter{funcCounter = newFunctionCounter}
+      return $ VFunction parameters leftParenthesis functionName isInitializer definingEnvironment function $ FunctionID $ count + 1
 
 defaultInterpreter :: Locals -> Interpreter
 defaultInterpreter localVariables =
@@ -328,162 +330,160 @@ defaultInterpreter localVariables =
           , line = 0
           , lexeme = "clock"
           }
-      clockFunc interpreter _ = do
+      clockFunc _ = do
         time <- liftIO getPOSIXTime
-        return (SomeValue $ VNumber (realToFrac time :: Double), interpreter)
+        return $ SomeValue $ VNumber (realToFrac time :: Double)
       clock = VFunction [] clockToken "<native fn>" False undefined clockFunc (FunctionID 0)
       globalEnv = Environment (Map.fromList [("clock", SomeValue clock)]) Nothing
       table = Map.fromList [(EnvID 0, globalEnv)]
    in Interpreter table (resolverMap localVariables) (EnvID 0) (EnvID 0) (InstanceID 0) (FuncCounter Map.empty)
 
-createChildEnv :: Interpreter -> Interpreter
-createChildEnv interpreter =
+createChildEnv :: (MonadState Interpreter m) => m ()
+createChildEnv = do
+  interpreter <- get
   let outputId = nextLargest . nextEnvironmentId $ interpreter
       emptyEnv = Environment Map.empty $ Just $ currentEnvironment interpreter
       newTable = Map.insert outputId emptyEnv $ environmentTable interpreter
-   in interpreter
-        { environmentTable = newTable
-        , currentEnvironment = outputId
-        , nextEnvironmentId = outputId
-        }
+  put interpreter{environmentTable = newTable, currentEnvironment = outputId, nextEnvironmentId = outputId}
 
-changeToParent :: Interpreter -> Interpreter
-changeToParent interpreter =
+changeToParent :: InterpreterOutput ()
+changeToParent = do
+  interpreter <- get
   let Environment _ parent = environmentTable interpreter Map.! currentEnvironment interpreter
-   in case parent of
-        Just parentEnvironmentId -> interpreter{currentEnvironment = parentEnvironmentId}
-        Nothing -> error "can't change to parent when no parent"
+  case parent of
+    Just parentEnvironmentId -> put interpreter{currentEnvironment = parentEnvironmentId}
+    Nothing -> error "can't change to parent when no parent"
 
-define :: Interpreter -> Token -> SomeValue -> Interpreter
-define interpreter token value =
+define :: (MonadState Interpreter m) => Token -> SomeValue -> m ()
+define token value = do
+  interpreter <- get
   let Environment envTable parent = environmentTable interpreter Map.! currentEnvironment interpreter
-   in let definedTable = Map.insert (lexeme token) value envTable
-          definedEnvironment = Environment definedTable parent
-       in interpreter
-            { environmentTable =
-                Map.insert
-                  (currentEnvironment interpreter)
-                  definedEnvironment
-                  (environmentTable interpreter)
-            }
+      definedTable = Map.insert (lexeme token) value envTable
+      definedEnvironment = Environment definedTable parent
+  put interpreter{environmentTable = Map.insert (currentEnvironment interpreter) definedEnvironment (environmentTable interpreter)}
 
-assignTok :: Interpreter -> Token -> SomeValue -> InterpreterOutput Interpreter
-assignTok interpreter token value =
-  case environmentTable interpreter Map.! currentEnvironment interpreter of
-    (Environment envTable parent)
-      | Map.member (lexeme token) envTable ->
-          let assignedTable = Map.insert (lexeme token) value envTable
-              assignedEnv = Environment assignedTable parent
-           in return
-                interpreter
-                  { environmentTable =
-                      Map.insert
-                        (currentEnvironment interpreter)
-                        assignedEnv
-                        (environmentTable interpreter)
-                  }
-      | Just parentEnv <- parent -> do
-          assignedInParent <- assignTok interpreter{currentEnvironment = parentEnv} token value
-          return $ interpreter{environmentTable = environmentTable assignedInParent}
-      | Nothing <- parent ->
-          throwRuntimeError $ runtimeError token $ "Undefined variable '" ++ lexeme token ++ "'."
+assignTok :: Token -> SomeValue -> InterpreterOutput ()
+assignTok token value = do
+  interpreter <- get
+  let Environment envTable parent = environmentTable interpreter Map.! currentEnvironment interpreter
+  if Map.member (lexeme token) envTable
+    then
+      let assignedTable = Map.insert (lexeme token) value envTable
+          assignedEnv = Environment assignedTable parent
+       in put
+            interpreter
+              { environmentTable =
+                  Map.insert
+                    (currentEnvironment interpreter)
+                    assignedEnv
+                    (environmentTable interpreter)
+              }
+    else case parent of
+      Just parentEnv -> do
+        put interpreter{currentEnvironment = parentEnv}
+        assignTok token value
+        put interpreter{currentEnvironment = currentEnvironment interpreter}
+      Nothing -> throwRuntimeError $ runtimeError token $ "Undefined variable '" ++ lexeme token ++ "'."
 
-assignThis :: Value 'ValueInstance -> EnvID -> Interpreter -> Interpreter
-assignThis value toDefineIn interpreter =
+assignThis :: Value 'ValueInstance -> EnvID -> InterpreterOutput ()
+assignThis value toDefineIn = do
+  interpreter <- get
   let Environment variables parent = case environmentTable interpreter Map.!? toDefineIn of
         Nothing -> error "here"
         Just e -> e
       env = Environment (Map.insert "this" (SomeValue value) variables) parent
-   in interpreter{environmentTable = Map.insert toDefineIn env $ environmentTable interpreter}
+  put interpreter{environmentTable = Map.insert toDefineIn env $ environmentTable interpreter}
 
-assign :: Interpreter -> Expr -> Token -> SomeValue -> InterpreterOutput Interpreter
-assign interpreter expr name value =
+assign :: Expr -> Token -> SomeValue -> InterpreterOutput ()
+assign expr name value = do
+  interpreter <- get
   case locals interpreter Map.!? expr of
-    Nothing -> assignGlobal interpreter name value
-    Just distance -> assignAt interpreter distance name value
+    Nothing -> assignGlobal name value
+    Just distance -> assignAt distance name value
 
-assignAt :: Interpreter -> Int -> Token -> SomeValue -> InterpreterOutput Interpreter
-assignAt interpreter distance name value =
-  let ancestorId = ancestor distance interpreter $ currentEnvironment interpreter
-      Environment envTable parent = fromMaybe (error "in assignAt") (environmentTable interpreter Map.!? ancestorId)
+assignAt :: Int -> Token -> SomeValue -> InterpreterOutput ()
+assignAt distance name value = do
+  interpreter <- get
+  ancestor <- getAncestor distance $ currentEnvironment interpreter
+  let Environment envTable parent = fromMaybe (error "in assignAt") (environmentTable interpreter Map.!? ancestor)
       newTable =
         Map.insert
-          ancestorId
+          ancestor
           (Environment (Map.insert (lexeme name) value envTable) parent)
           (environmentTable interpreter)
-   in return interpreter{environmentTable = newTable}
+  put interpreter{environmentTable = newTable}
 
-assignGlobal :: Interpreter -> Token -> SomeValue -> InterpreterOutput Interpreter
-assignGlobal interpreter token value =
+assignGlobal :: Token -> SomeValue -> InterpreterOutput ()
+assignGlobal token value = do
+  interpreter <- get
   let Environment globalTable parentEnv = environmentTable interpreter Map.! EnvID 0
       newGlobalEnv = Environment (Map.insert (lexeme token) value globalTable) parentEnv
-   in case globalTable Map.!? lexeme token of
-        Just _ ->
-          return
-            interpreter
-              { environmentTable = Map.insert (EnvID 0) newGlobalEnv $ environmentTable interpreter
-              }
-        Nothing -> throwRuntimeError $ runtimeError token $ "Undefined variable '" ++ lexeme token ++ "'."
+  case globalTable Map.!? lexeme token of
+    Just _ ->
+      put interpreter{environmentTable = Map.insert (EnvID 0) newGlobalEnv $ environmentTable interpreter}
+    Nothing -> throwRuntimeError $ runtimeError token $ "Undefined variable '" ++ lexeme token ++ "'."
 
-lookupVariable :: Interpreter -> Token -> Expr -> InterpreterOutput SomeValue
-lookupVariable interpreter name expr =
+lookupVariable :: Token -> Expr -> InterpreterOutput SomeValue
+lookupVariable name expr = do
+  interpreter <- get
   case locals interpreter Map.!? expr of
     Nothing ->
       let Environment envTable _ = environmentTable interpreter Map.! EnvID 0
        in case envTable Map.!? lexeme name of
             Nothing -> throwRuntimeError $ runtimeError name $ "Undefined variable '" ++ lexeme name ++ "'."
             Just value -> return value
-    Just distance -> return $ getAt interpreter distance $ lexeme name
+    Just distance -> getAt distance $ lexeme name
 
-getAt :: Interpreter -> Int -> String -> SomeValue
-getAt interpreter distance name =
-  let Environment envTable _ =
-        fromMaybe
-          (error "in getAt")
-          (environmentTable interpreter Map.!? ancestor distance interpreter (currentEnvironment interpreter))
-   in case envTable Map.!? name of
-        Nothing ->
-          error $
-            "getting "
-              ++ name
-              ++ " from envTable, distance is "
-              ++ show distance
-              ++ ", current is "
-              ++ show (currentEnvironment interpreter)
-              ++ "\n\n     interp is "
-              ++ show interpreter
-        Just value -> value
+getAt :: Int -> String -> InterpreterOutput SomeValue
+getAt distance name = do
+  interpreter <- get
+  ancestor <- getAncestor distance $ currentEnvironment interpreter
+  let Environment envTable _ = environmentTable interpreter Map.! ancestor
+  case envTable Map.!? name of
+    Nothing ->
+      error $
+        "getting "
+          ++ name
+          ++ " from envTable, distance is "
+          ++ show distance
+          ++ ", current is "
+          ++ show (currentEnvironment interpreter)
+          ++ "\n\n     interp is "
+          ++ show interpreter
+    Just value -> return value
 
-ancestor :: Int -> Interpreter -> EnvID -> EnvID
-ancestor distance interpreter childId
-  | distance == 0 = childId
-  | otherwise = ancestor (distance - 1) interpreter $
-      case environmentTable interpreter Map.!? childId of
-        Just (Environment _ parent) -> fromMaybe undefined parent
-        Nothing -> error "in ancestor"
+-- TODO: fix this to make it more total?
+getAncestor :: Int -> EnvID -> InterpreterOutput EnvID
+getAncestor 0 childId = return childId
+getAncestor distance childId = do
+  interpreter <- get
+  let Environment _ parent = environmentTable interpreter Map.! childId
+      parentId = fromMaybe undefined parent
+  getAncestor (distance - 1) parentId
 
-restoreRunningEnv :: Interpreter -> Interpreter -> Interpreter
+restoreRunningEnv :: (MonadState Interpreter m) => Interpreter -> m ()
 restoreRunningEnv interpreter = setRunningEnv $ currentEnvironment interpreter
 
-setRunningEnv :: EnvID -> Interpreter -> Interpreter
-setRunningEnv envId interpreter = interpreter{currentEnvironment = envId}
+setRunningEnv :: (MonadState Interpreter m) => EnvID -> m ()
+setRunningEnv envId = get >>= \interpreter -> put interpreter{currentEnvironment = envId}
 
-newInstance :: String -> Map.Map String (Value 'ValueFunction) -> Interpreter -> (Value 'ValueInstance, Interpreter)
-newInstance className classMethods interpreter =
+newInstance :: String -> Map.Map String (Value 'ValueFunction) -> InterpreterOutput (Value 'ValueInstance)
+newInstance className classMethods = do
+  interpreter <- get
   let iid = nextInstanceId interpreter
-   in ( VInstance className Map.empty classMethods iid
-      , interpreter{nextInstanceId = incrementInstanceId iid}
-      )
+  put interpreter{nextInstanceId = incrementInstanceId iid}
+  return $ VInstance className Map.empty classMethods iid
 
-setProperty :: InstanceID -> Token -> SomeValue -> Interpreter -> Interpreter
-setProperty iid name value interpreter =
+setProperty :: InstanceID -> Token -> SomeValue -> InterpreterOutput ()
+setProperty iid name value = do
+  interpreter <- get
   let mapFunc (SomeValue (VInstance className properties methods otherIid)) =
         if iid == otherIid
           then SomeValue $ VInstance className (Map.insert (lexeme name) value properties) methods otherIid
           else SomeValue $ VInstance className (Map.map mapFunc properties) methods otherIid
       mapFunc other = other
       envMap (Environment variables parentId) = Environment (Map.map mapFunc variables) parentId
-   in interpreter{environmentTable = Map.map envMap $ environmentTable interpreter}
+  put interpreter{environmentTable = Map.map envMap $ environmentTable interpreter}
 
 data ValueKind
   = ValueNumber
@@ -520,7 +520,7 @@ data Value (k :: ValueKind) where
   VBoolean :: Bool -> Value 'ValueBoolean
   VNil :: Value 'ValueNil
   VCall :: Int -> Token -> String -> Value 'ValueCall
-  VFunction :: [Token] -> Token -> String -> Bool -> EnvID -> (Interpreter -> [SomeValue] -> ExceptT String IO (SomeValue, Interpreter)) -> FunctionID -> Value 'ValueFunction
+  VFunction :: [Token] -> Token -> String -> Bool -> EnvID -> ([SomeValue] -> StateT Interpreter (ExceptT String IO) SomeValue) -> FunctionID -> Value 'ValueFunction
   VClass :: String -> Int -> (Map.Map String (Value 'ValueFunction)) -> Value 'ValueClass
   VInstance :: String -> (Map.Map String SomeValue) -> (Map.Map String (Value 'ValueFunction)) -> InstanceID -> Value 'ValueInstance
 
