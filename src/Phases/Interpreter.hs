@@ -11,13 +11,13 @@ module Phases.Interpreter (
   Interpreter,
 ) where
 
-import Control.Monad (foldM, foldM_, void, when)
+import Control.Monad (foldM, foldM_, unless, void, when)
 import Control.Monad.Except (ExceptT (..), runExceptT, throwError)
 import Control.Monad.IO.Class (liftIO)
-import Control.Monad.State (MonadState (get, put), StateT, runStateT)
+import Control.Monad.State (MonadState (get, put), StateT, gets, runStateT)
 import Control.Monad.Trans.Class (lift)
 import qualified Data.Map as Map
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, isNothing)
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import Error
 import Numeric (showFFloat)
@@ -72,18 +72,23 @@ interpret (SomeStmt (Class name superclass classMethods)) = do
         _ -> throwRuntimeError $ runtimeError superclassName "Superclass must be a class."
     _ -> error "TODO: GADTs for Exprs"
   define name $ SomeValue VNil
+  unless
+    (isNothing superclass)
+    ( do
+        createChildEnv
+        define
+          MkToken{tokenType = SUPER, offset = 0, literal = Nothing, line = 0, lexeme = "super"}
+          $ SomeValue
+          $ fromMaybe undefined superclassValue
+    )
   createChildEnv
   klass <- getKlass superclassValue
   changeToParent
+  unless (isNothing superclass) changeToParent
   assignTok name klass
  where
   getKlass :: Maybe (Value 'ValueClass) -> InterpreterOutput SomeValue
-  getKlass superclassValue = do
-    methods <- getMethods
-    let arity = case methods Map.!? "init" of
-          Nothing -> 0
-          Just (VFunction numArgs _ _ _ _ _ _) -> length numArgs
-    return $ SomeValue $ VClass (lexeme name) superclassValue arity methods
+  getKlass superclassValue = SomeValue . VClass (lexeme name) superclassValue <$> getMethods
   foldMFunc :: Map.Map String (Value 'ValueFunction) -> Stmt 'KFunction -> InterpreterOutput (Map.Map String (Value 'ValueFunction))
   foldMFunc buildup method@(Function methodName _ _) = do
     methodObject <- functionToValue (lexeme methodName == "init") method
@@ -121,16 +126,17 @@ interpretExpr (Call callee leftParenthesis argumentExpressions) = do
   arguments <- interpretExprs argumentExpressions
   case value of
     (SomeValue function@VFunction{}) -> callFunction interpreter arguments function
-    (SomeValue loxClass@(VClass className _ _ classMethods)) -> do
+    (SomeValue loxClass@(VClass className _ _)) -> do
       inst <- newInstance className loxClass
-      case classMethods Map.!? "init" of
+      initializer <- getInitializer loxClass
+      case initializer of
         Nothing ->
           if null arguments
             then return $ SomeValue inst
             else throwRuntimeError $ runtimeError leftParenthesis $ "Expected 0 arguments but got " ++ show (length arguments) ++ "."
-        Just initializer@(VFunction _ _ _ _ functionEnvironment _ _) -> do
+        Just initializerFunction@(VFunction _ _ _ _ functionEnvironment _ _) -> do
           assignThis inst functionEnvironment
-          callFunction interpreter arguments initializer
+          callFunction interpreter arguments initializerFunction
     _ -> throwRuntimeError $ runtimeError leftParenthesis "Can only call functions and classes."
  where
   callFunction :: Interpreter -> [SomeValue] -> Value 'ValueFunction -> InterpreterOutput SomeValue
@@ -209,26 +215,39 @@ interpretExpr (Set object name value) = do
       setProperty iid name interpretedValue
       return interpretedValue
     _ -> throwRuntimeError $ runtimeError name "Only instances have fields."
+interpretExpr expr@(Super _ method) = do
+  distance <- gets $ (Map.! expr) . locals
+  superclass <- getSuper distance
+  object <- getThis $ distance - 1
+  SomeValue <$> findMethod method object superclass
 interpretExpr expr@(This keyword) = lookupVariable keyword expr
+
+getInitializer :: Value 'ValueClass -> InterpreterOutput (Maybe (Value 'ValueFunction))
+getInitializer (VClass _ superclass methods) =
+  case methods Map.!? "init" of
+    Just initializer -> return $ Just initializer
+    Nothing -> case superclass of
+      Nothing -> return Nothing
+      Just superclassClass -> getInitializer superclassClass
 
 getFieldOrMethod :: Token -> SomeValue -> InterpreterOutput SomeValue
 getFieldOrMethod name (SomeValue inst@(VInstance _ properties loxClass _)) =
   case properties Map.!? lexeme name of
     Just value -> return value
-    Nothing -> SomeValue <$> findMethod loxClass
- where
-  findMethod :: Value 'ValueClass -> InterpreterOutput (Value 'ValueFunction)
-  findMethod (VClass _ superclass _ methods) =
-    case methods Map.!? lexeme name of
-      Just (VFunction params leftParenthesis functionName isInitializer definingEnvironment function _) -> do
-        assignThis inst definingEnvironment
-        addFunction params leftParenthesis functionName isInitializer definingEnvironment function
-      Nothing ->
-        maybe
-          (throwRuntimeError $ runtimeError name $ "Undefined property '" ++ lexeme name ++ "'.")
-          findMethod
-          superclass
+    Nothing -> SomeValue <$> findMethod name inst loxClass
 getFieldOrMethod name _ = throwRuntimeError $ runtimeError name "Only instances have properties."
+
+findMethod :: Token -> Value 'ValueInstance -> Value 'ValueClass -> InterpreterOutput (Value 'ValueFunction)
+findMethod name inst (VClass _ superclass methods) =
+  case methods Map.!? lexeme name of
+    Just (VFunction params leftParenthesis functionName isInitializer definingEnvironment function _) -> do
+      assignThis inst definingEnvironment
+      addFunction params leftParenthesis functionName isInitializer definingEnvironment function
+    Nothing ->
+      maybe
+        (throwRuntimeError $ runtimeError name $ "Undefined property '" ++ lexeme name ++ "'.")
+        (findMethod name inst)
+        superclass
 
 plusOperator :: SomeValue -> SomeValue -> Token -> InterpreterOutput SomeValue
 plusOperator (SomeValue (VNumber left)) (SomeValue (VNumber right)) _ = return $ SomeValue $ VNumber $ left + right
@@ -439,6 +458,20 @@ getAt distance name = do
           ++ show interpreter
     Just value -> return value
 
+getSuper :: Int -> InterpreterOutput (Value 'ValueClass)
+getSuper distance = do
+  superValue <- getAt distance "super"
+  case superValue of
+    (SomeValue super@VClass{}) -> return super
+    _ -> error "TODO: think about this?"
+
+getThis :: Int -> InterpreterOutput (Value 'ValueInstance)
+getThis distance = do
+  thisValue <- getAt distance "this"
+  case thisValue of
+    (SomeValue this@VInstance{}) -> return this
+    _ -> error "TODO: think about this?"
+
 -- TODO: fix this to make it more total?
 getAncestor :: Int -> EnvID -> InterpreterOutput EnvID
 getAncestor 0 childId = return childId
@@ -497,7 +530,7 @@ instance Eq SomeValue where
   SomeValue (VCall arity1 tok1 name1) == SomeValue (VCall arity2 tok2 name2) = arity1 == arity2 && tok1 == tok2 && name1 == name2
   SomeValue (VFunction params1 callee1 name1 isInit1 _ _ fid1) == SomeValue (VFunction params2 callee2 name2 isInit2 _ _ fid2) =
     params1 == params2 && callee1 == callee2 && name1 == name2 && isInit1 == isInit2 && fid1 == fid2
-  SomeValue (VClass name1 _ _ _) == SomeValue (VClass name2 _ _ _) = name1 == name2
+  SomeValue (VClass name1 _ _) == SomeValue (VClass name2 _ _) = name1 == name2
   SomeValue (VInstance _ _ _ iid1) == SomeValue (VInstance _ _ _ iid2) = iid1 == iid2
   _ == _ = False
 
@@ -508,7 +541,7 @@ data Value (k :: ValueKind) where
   VNil :: Value 'ValueNil
   VCall :: Int -> Token -> String -> Value 'ValueCall
   VFunction :: [Token] -> Token -> String -> Bool -> EnvID -> ([SomeValue] -> StateT Interpreter (ExceptT String IO) SomeValue) -> FunctionID -> Value 'ValueFunction
-  VClass :: String -> Maybe (Value 'ValueClass) -> Int -> (Map.Map String (Value 'ValueFunction)) -> Value 'ValueClass
+  VClass :: String -> Maybe (Value 'ValueClass) -> (Map.Map String (Value 'ValueFunction)) -> Value 'ValueClass
   VInstance :: String -> (Map.Map String SomeValue) -> Value 'ValueClass -> InstanceID -> Value 'ValueInstance
 
 instance Eq (Value k) where
@@ -519,7 +552,7 @@ instance Eq (Value k) where
   (VCall arity1 tok1 name1) == (VCall arity2 tok2 name2) = arity1 == arity2 && tok1 == tok2 && name1 == name2
   (VFunction params1 callee1 name1 isInit1 _ _ fid1) == (VFunction params2 callee2 name2 isInit2 _ _ fid2) =
     params1 == params2 && callee1 == callee2 && name1 == name2 && isInit1 == isInit2 && fid1 == fid2
-  (VClass name1 _ _ _) == (VClass name2 _ _ _) = name1 == name2
+  (VClass name1 _ _) == (VClass name2 _ _) = name1 == name2
   (VInstance _ _ _ iid1) == (VInstance _ _ _ iid2) = iid1 == iid2
 
 instance Ord (Value k) where
@@ -530,7 +563,7 @@ instance Ord (Value k) where
   compare (VCall arity1 tok1 name1) (VCall arity2 tok2 name2) = compare (arity1, tok1, name1) (arity2, tok2, name2)
   compare (VFunction params1 callee1 name1 isInit1 _ _ fid1) (VFunction params2 callee2 name2 isInit2 _ _ fid2) =
     compare (params1, callee1, name1, isInit1, fid1) (params2, callee2, name2, isInit2, fid2)
-  compare (VClass name1 _ _ _) (VClass name2 _ _ _) = compare name1 name2
+  compare (VClass name1 _ _) (VClass name2 _ _) = compare name1 name2
   compare (VInstance _ _ _ iid1) (VInstance _ _ _ iid2) = compare iid1 iid2
 
 instance Show (Value k) where
@@ -546,7 +579,7 @@ instance Show (Value k) where
   show VNil = "nil"
   show (VFunction _ _ s _ _ _ _) = s
   show (VCall _ _ s) = s
-  show (VClass name _ _ _) = name
+  show (VClass name _ _) = name
   show (VInstance name _ _ _) = name ++ " instance"
 
 fromLiteral :: Literal -> SomeValue

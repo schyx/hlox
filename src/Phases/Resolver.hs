@@ -15,7 +15,7 @@ newtype Locals = Locals {resolverMap :: Map.Map Expr Int}
 data FunctionType = NONE | FUNCTION | METHOD | INITIALIZER
   deriving (Eq)
 
-data ClassType = NO_CLASS | CLASS
+data ClassType = NO_CLASS | CLASS | SUBCLASS
   deriving (Eq)
 
 data Resolver = Resolver
@@ -126,7 +126,11 @@ resolveStmt (SomeStmt (Return keyword returnValue)) =
         addError keyword "Can't return a value from an initializer." resolver
     | otherwise = resolver
 resolveStmt (SomeStmt (Class name superclass methods)) =
-  endScope
+  ( case superclass of
+      Nothing -> id
+      Just _ -> endScope
+  )
+    . endScope
     . ( \resolver ->
           foldl
             ( flip
@@ -134,14 +138,20 @@ resolveStmt (SomeStmt (Class name superclass methods)) =
                     resolveFunction
                       method
                       (if lexeme methodName == "init" then INITIALIZER else METHOD)
-                      $ Just CLASS
+                      $ Just $ maybe CLASS (const SUBCLASS) superclass
                 )
             )
             resolver
             methods
       )
     . (\resolver -> resolver{scopes = Map.insert "this" True (head $ scopes resolver) : tail (scopes resolver)})
-    . beginScope
+    . beginScope -- TODO: make below more concise based on superclass is Nothing or not
+    . case superclass of
+      Nothing -> id
+      Just _ ->
+        ( \resolver -> resolver{scopes = Map.insert "super" True (head $ scopes resolver) : tail (scopes resolver)}
+        )
+          . beginScope
     . maybe id resolveExpr superclass
     . ( case superclass of
           Nothing -> id
@@ -193,6 +203,15 @@ resolveExpr (Get object _) = resolveExpr object
 resolveExpr (Set object _ value) =
   resolveExpr value
     . resolveExpr object
+resolveExpr expr@(Super keyword _) =
+  resolveLocal expr keyword
+    . checkClassType
+ where
+  checkClassType resolver =
+    case currentClass resolver of
+      SUBCLASS -> resolver
+      NO_CLASS -> addError keyword "Can't use 'super' outside of a class." resolver
+      CLASS -> addError keyword "Can't use 'super' in a class with no superclass." resolver
 resolveExpr expr@(This keyword) = resolveLocal expr keyword . checkClassType
  where
   checkClassType resolver =

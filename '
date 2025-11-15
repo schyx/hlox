@@ -7,12 +7,13 @@ import Control.Applicative (Alternative (many), (<|>))
 import Control.Monad (when)
 import Control.Monad.Trans.Maybe (MaybeT (MaybeT, runMaybeT))
 import Data.Functor (($>))
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, isNothing)
 import Error (parseError)
 import Parser (Parser (Parser, runParser))
 import Phases.Expr
 import Phases.Stmt
 import Tokens
+import Debug.Trace (trace)
 
 maxArgumentNumber :: Int
 maxArgumentNumber = 255
@@ -43,15 +44,20 @@ parse input =
    in output
 
 planter :: Planter (Maybe SomeStmt)
-planter = runMaybeT declaration
+planter = do
+  maybeStmt <- runMaybeT declaration
+  when (isNothing maybeStmt) synchronize
+  return maybeStmt
 
-syncTokens :: [Token] -> [Token]
-syncTokens (token : tokens)
-  | tokenType token == EOF = token : tokens
-  | tokenType token == SEMICOLON = tokens
-  | tokenType token `elem` [CLASS, FUN, VAR, FOR, IF, WHILE, PRINT, RETURN] = token : tokens
-  | otherwise = syncTokens tokens
-syncTokens [] = error "Should not get empty in sync"
+synchronize :: Planter ()
+synchronize = makePlanter $ \(inErrs, inTokens) ->
+  let syncTokens (token : tokens)
+        | tokenType token == EOF = token : tokens
+        | tokenType token == SEMICOLON = trace (show tokens) tokens
+        | tokenType token `elem` [CLASS, FUN, VAR, FOR, IF, WHILE, PRINT, RETURN] = trace (show $ token : tokens) token : tokens
+        | otherwise = syncTokens tokens
+      syncTokens [] = error "Should not get empty in sync"
+   in Just ((inErrs, syncTokens inTokens), trace "in sync" ())
 
 -- | Allows for choice on the Planter level rather than the MaybeT level
 (<||>) :: MaybeT Planter a -> MaybeT Planter a -> MaybeT Planter a
@@ -86,11 +92,11 @@ consume desiredType message = MaybeT $ makePlanter $ \(inErrs, inTokens) ->
    in Just $
         if tokenType firstToken == desiredType
           then ((inErrs, restTokens), Just firstToken)
-          else ((errsIfFail, syncTokens inTokens), Nothing)
+          else ((trace (show desiredType ++ show inTokens) errsIfFail, inTokens), Nothing)
 
 addParseError :: String -> MaybeT Planter a
 addParseError errMessage = MaybeT $ makePlanter $ \(inErrs, tokens) ->
-  Just ((errMessage : inErrs, syncTokens tokens), Nothing)
+  Just ((errMessage : inErrs, tokens), Nothing)
 
 addNonBlockingParseError :: String -> MaybeT Planter ()
 addNonBlockingParseError errMessage = MaybeT $ makePlanter $ \(inErrs, tokens) ->
@@ -117,16 +123,7 @@ classDeclaration =
     <*> (Just . Variable <$> (match (== LESS) *> consume IDENTIFIER "Expect superclass name.") <||> pure Nothing)
     <*> (consume LEFT_BRACE "Expect '{' before class body." *> parseMethods <* consume RIGHT_BRACE "Expect '}' after class body.")
  where
-  -- TODO: fix this somehow?
-  parseMethods = MaybeT $ Parser $ \(inErrs, inToks) ->
-    let output = runPlanter (runMaybeT $ many $ createCallable "method") (inErrs, inToks)
-     in case output of
-          Nothing -> error "this shouldn't happen"
-          Just ((_, _), Nothing) -> error "this also shouldn't happen"
-          Just ((outErrs, outToks), Just methods) ->
-            if length outErrs == length inErrs
-              then Just ((outErrs, outToks), Just methods)
-              else Just ((outErrs, syncTokens outToks), Nothing)
+  parseMethods = many $ createCallable "method"
 
 functionDeclaration :: MaybeT Planter (Stmt KFunction)
 functionDeclaration = match (== FUN) *> createCallable "function"
