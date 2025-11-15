@@ -121,8 +121,8 @@ interpretExpr (Call callee leftParenthesis argumentExpressions) = do
   arguments <- interpretExprs argumentExpressions
   case value of
     (SomeValue function@VFunction{}) -> callFunction interpreter arguments function
-    (SomeValue (VClass className _ _ classMethods)) -> do
-      inst <- newInstance className classMethods
+    (SomeValue loxClass@(VClass className _ _ classMethods)) -> do
+      inst <- newInstance className loxClass
       case classMethods Map.!? "init" of
         Nothing ->
           if null arguments
@@ -212,14 +212,22 @@ interpretExpr (Set object name value) = do
 interpretExpr expr@(This keyword) = lookupVariable keyword expr
 
 getFieldOrMethod :: Token -> SomeValue -> InterpreterOutput SomeValue
-getFieldOrMethod name (SomeValue inst@(VInstance _ properties methods _)) =
+getFieldOrMethod name (SomeValue inst@(VInstance _ properties loxClass _)) =
   case properties Map.!? lexeme name of
     Just value -> return value
-    Nothing -> case methods Map.!? lexeme name of
+    Nothing -> SomeValue <$> findMethod loxClass
+ where
+  findMethod :: Value 'ValueClass -> InterpreterOutput (Value 'ValueFunction)
+  findMethod (VClass _ superclass _ methods) =
+    case methods Map.!? lexeme name of
       Just (VFunction params leftParenthesis functionName isInitializer definingEnvironment function _) -> do
         assignThis inst definingEnvironment
-        SomeValue <$> addFunction params leftParenthesis functionName isInitializer definingEnvironment function
-      Nothing -> throwRuntimeError $ runtimeError name $ "Undefined property '" ++ lexeme name ++ "'."
+        addFunction params leftParenthesis functionName isInitializer definingEnvironment function
+      Nothing ->
+        maybe
+          (throwRuntimeError $ runtimeError name $ "Undefined property '" ++ lexeme name ++ "'.")
+          findMethod
+          superclass
 getFieldOrMethod name _ = throwRuntimeError $ runtimeError name "Only instances have properties."
 
 plusOperator :: SomeValue -> SomeValue -> Token -> InterpreterOutput SomeValue
@@ -446,12 +454,12 @@ restoreRunningEnv interpreter = setRunningEnv $ currentEnvironment interpreter
 setRunningEnv :: (MonadState Interpreter m) => EnvID -> m ()
 setRunningEnv envId = get >>= \interpreter -> put interpreter{currentEnvironment = envId}
 
-newInstance :: String -> Map.Map String (Value 'ValueFunction) -> InterpreterOutput (Value 'ValueInstance)
-newInstance className classMethods = do
+newInstance :: String -> Value 'ValueClass -> InterpreterOutput (Value 'ValueInstance)
+newInstance className loxClass = do
   interpreter <- get
   let iid = nextInstanceId interpreter
   put interpreter{nextInstanceId = incrementInstanceId iid}
-  return $ VInstance className Map.empty classMethods iid
+  return $ VInstance className Map.empty loxClass iid
 
 setProperty :: InstanceID -> Token -> SomeValue -> InterpreterOutput ()
 setProperty iid name value = do
@@ -501,7 +509,7 @@ data Value (k :: ValueKind) where
   VCall :: Int -> Token -> String -> Value 'ValueCall
   VFunction :: [Token] -> Token -> String -> Bool -> EnvID -> ([SomeValue] -> StateT Interpreter (ExceptT String IO) SomeValue) -> FunctionID -> Value 'ValueFunction
   VClass :: String -> Maybe (Value 'ValueClass) -> Int -> (Map.Map String (Value 'ValueFunction)) -> Value 'ValueClass
-  VInstance :: String -> (Map.Map String SomeValue) -> (Map.Map String (Value 'ValueFunction)) -> InstanceID -> Value 'ValueInstance
+  VInstance :: String -> (Map.Map String SomeValue) -> Value 'ValueClass -> InstanceID -> Value 'ValueInstance
 
 instance Eq (Value k) where
   (VNumber n1) == (VNumber n2) = n1 == n2
