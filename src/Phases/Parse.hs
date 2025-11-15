@@ -118,8 +118,9 @@ declaration =
 classDeclaration :: MaybeT Planter (Stmt KClass)
 classDeclaration =
   Class
-    <$> (match (== CLASS) *> consume IDENTIFIER "Expect class name." <* consume LEFT_BRACE "Expect '{' before class body.")
-    <*> (parseMethods <* consume RIGHT_BRACE "Expect '}' after class body.")
+    <$> (match (== CLASS) *> consume IDENTIFIER "Expect class name.")
+    <*> (Just . Variable <$> (match (== LESS) *> consume IDENTIFIER "Expect superclass name.") <||> pure Nothing)
+    <*> (consume LEFT_BRACE "Expect '{' before class body." *> parseMethods <* consume RIGHT_BRACE "Expect '}' after class body.")
  where
   parseMethods = many $ createCallable "method"
 
@@ -333,8 +334,8 @@ call = callOrGet <||> primary
       firstToken <- getFirstToken
       let tooManyArgsMsg = parseError firstToken ("Can't have more than " ++ show maxArgumentNumber ++ " arguments.")
       addNonBlockingParseError tooManyArgsMsg
-    argument <- expression
-    let newBuildup = argument : buildup
+    arg <- expression
+    let newBuildup = arg : buildup
     (match (== COMMA) >> argsHelper newBuildup)
       <||> (consume RIGHT_PAREN "Expect ')' after arguments." >> return (reverse newBuildup))
 

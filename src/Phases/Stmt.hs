@@ -30,4 +30,4 @@ data Stmt (k :: StmtKind) where
   While :: Expr -> SomeStmt -> Stmt 'KWhile
   Function :: Token -> [Token] -> [SomeStmt] -> Stmt 'KFunction
   Return :: Token -> Maybe Expr -> Stmt 'KReturn
-  Class :: Token -> [Stmt 'KFunction] -> Stmt 'KClass
+  Class :: Token -> Maybe Expr -> [Stmt 'KFunction] -> Stmt 'KClass

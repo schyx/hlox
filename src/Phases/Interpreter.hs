@@ -62,20 +62,28 @@ interpret stmt@(SomeStmt (While condition whileBlock)) = do
 interpret (SomeStmt function@(Function functionName _ _)) = functionToValue False function >>= define functionName . SomeValue
 interpret (SomeStmt (Return _ Nothing)) = throwError $ SomeValue VNil
 interpret (SomeStmt (Return _ (Just value))) = interpretExpr value >>= throwError
-interpret (SomeStmt (Class name classMethods)) = do
+interpret (SomeStmt (Class name superclass classMethods)) = do
+  superclassValue <- case superclass of
+    Nothing -> return Nothing
+    Just superclassExpr@(Variable superclassName) -> do
+      value <- interpretExpr superclassExpr
+      case value of
+        (SomeValue classValue@VClass{}) -> return $ Just classValue
+        _ -> throwRuntimeError $ runtimeError superclassName "Superclass must be a class."
+    _ -> error "TODO: GADTs for Exprs"
   define name $ SomeValue VNil
   createChildEnv
-  klass <- getKlass
+  klass <- getKlass superclassValue
   changeToParent
   assignTok name klass
  where
-  getKlass :: InterpreterOutput SomeValue
-  getKlass = do
+  getKlass :: Maybe (Value 'ValueClass) -> InterpreterOutput SomeValue
+  getKlass superclassValue = do
     methods <- getMethods
     let arity = case methods Map.!? "init" of
           Nothing -> 0
           Just (VFunction numArgs _ _ _ _ _ _) -> length numArgs
-    return $ SomeValue $ VClass (lexeme name) arity methods
+    return $ SomeValue $ VClass (lexeme name) superclassValue arity methods
   foldMFunc :: Map.Map String (Value 'ValueFunction) -> Stmt 'KFunction -> InterpreterOutput (Map.Map String (Value 'ValueFunction))
   foldMFunc buildup method@(Function methodName _ _) = do
     methodObject <- functionToValue (lexeme methodName == "init") method
@@ -113,7 +121,7 @@ interpretExpr (Call callee leftParenthesis argumentExpressions) = do
   arguments <- interpretExprs argumentExpressions
   case value of
     (SomeValue function@VFunction{}) -> callFunction interpreter arguments function
-    (SomeValue (VClass className _ classMethods)) -> do
+    (SomeValue (VClass className _ _ classMethods)) -> do
       inst <- newInstance className classMethods
       case classMethods Map.!? "init" of
         Nothing ->
@@ -481,7 +489,7 @@ instance Eq SomeValue where
   SomeValue (VCall arity1 tok1 name1) == SomeValue (VCall arity2 tok2 name2) = arity1 == arity2 && tok1 == tok2 && name1 == name2
   SomeValue (VFunction params1 callee1 name1 isInit1 _ _ fid1) == SomeValue (VFunction params2 callee2 name2 isInit2 _ _ fid2) =
     params1 == params2 && callee1 == callee2 && name1 == name2 && isInit1 == isInit2 && fid1 == fid2
-  SomeValue (VClass name1 _ _) == SomeValue (VClass name2 _ _) = name1 == name2
+  SomeValue (VClass name1 _ _ _) == SomeValue (VClass name2 _ _ _) = name1 == name2
   SomeValue (VInstance _ _ _ iid1) == SomeValue (VInstance _ _ _ iid2) = iid1 == iid2
   _ == _ = False
 
@@ -492,7 +500,7 @@ data Value (k :: ValueKind) where
   VNil :: Value 'ValueNil
   VCall :: Int -> Token -> String -> Value 'ValueCall
   VFunction :: [Token] -> Token -> String -> Bool -> EnvID -> ([SomeValue] -> StateT Interpreter (ExceptT String IO) SomeValue) -> FunctionID -> Value 'ValueFunction
-  VClass :: String -> Int -> (Map.Map String (Value 'ValueFunction)) -> Value 'ValueClass
+  VClass :: String -> Maybe (Value 'ValueClass) -> Int -> (Map.Map String (Value 'ValueFunction)) -> Value 'ValueClass
   VInstance :: String -> (Map.Map String SomeValue) -> (Map.Map String (Value 'ValueFunction)) -> InstanceID -> Value 'ValueInstance
 
 instance Eq (Value k) where
@@ -503,7 +511,7 @@ instance Eq (Value k) where
   (VCall arity1 tok1 name1) == (VCall arity2 tok2 name2) = arity1 == arity2 && tok1 == tok2 && name1 == name2
   (VFunction params1 callee1 name1 isInit1 _ _ fid1) == (VFunction params2 callee2 name2 isInit2 _ _ fid2) =
     params1 == params2 && callee1 == callee2 && name1 == name2 && isInit1 == isInit2 && fid1 == fid2
-  (VClass name1 _ _) == (VClass name2 _ _) = name1 == name2
+  (VClass name1 _ _ _) == (VClass name2 _ _ _) = name1 == name2
   (VInstance _ _ _ iid1) == (VInstance _ _ _ iid2) = iid1 == iid2
 
 instance Ord (Value k) where
@@ -514,7 +522,7 @@ instance Ord (Value k) where
   compare (VCall arity1 tok1 name1) (VCall arity2 tok2 name2) = compare (arity1, tok1, name1) (arity2, tok2, name2)
   compare (VFunction params1 callee1 name1 isInit1 _ _ fid1) (VFunction params2 callee2 name2 isInit2 _ _ fid2) =
     compare (params1, callee1, name1, isInit1, fid1) (params2, callee2, name2, isInit2, fid2)
-  compare (VClass name1 _ _) (VClass name2 _ _) = compare name1 name2
+  compare (VClass name1 _ _ _) (VClass name2 _ _ _) = compare name1 name2
   compare (VInstance _ _ _ iid1) (VInstance _ _ _ iid2) = compare iid1 iid2
 
 instance Show (Value k) where
@@ -530,7 +538,7 @@ instance Show (Value k) where
   show VNil = "nil"
   show (VFunction _ _ s _ _ _ _) = s
   show (VCall _ _ s) = s
-  show (VClass name _ _) = name
+  show (VClass name _ _ _) = name
   show (VInstance name _ _ _) = name ++ " instance"
 
 fromLiteral :: Literal -> SomeValue

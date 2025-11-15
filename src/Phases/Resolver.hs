@@ -125,7 +125,7 @@ resolveStmt (SomeStmt (Return keyword returnValue)) =
     , currentFunction resolver == INITIALIZER =
         addError keyword "Can't return a value from an initializer." resolver
     | otherwise = resolver
-resolveStmt (SomeStmt (Class name methods)) =
+resolveStmt (SomeStmt (Class name superclass methods)) =
   endScope
     . ( \resolver ->
           foldl
@@ -142,6 +142,15 @@ resolveStmt (SomeStmt (Class name methods)) =
       )
     . (\resolver -> resolver{scopes = Map.insert "this" True (head $ scopes resolver) : tail (scopes resolver)})
     . beginScope
+    . maybe id resolveExpr superclass
+    . ( case superclass of
+          Nothing -> id
+          Just (Variable className) ->
+            if lexeme name == lexeme className
+              then addError className "A class can't inherit from itself."
+              else id
+          Just _ -> error "TODO: GADTs for Exprs"
+      )
     . define name
     . declare name
 
