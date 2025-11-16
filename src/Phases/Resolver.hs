@@ -92,39 +92,11 @@ resolveLocal expr name resolver = resolveName expr depth resolver
       Just _ -> Just currentDepth
       Nothing -> depthHelper (currentDepth + 1) rest
 
--- TODO: refactor to be in alphabetical order
 resolveStmt :: SomeStmt -> Resolver -> Resolver
-resolveStmt (SomeStmt (Expression expr)) = resolveExpr expr
-resolveStmt (SomeStmt (Print expr)) = resolveExpr expr
-resolveStmt (SomeStmt (Var variableName variableValue)) =
-  define variableName
-    . resolveExpr variableValue
-    . declare variableName
 resolveStmt (SomeStmt (Block blockStmts)) =
   endScope
     . (\resolver -> foldl (flip resolveStmt) resolver blockStmts)
     . beginScope
-resolveStmt (SomeStmt (If condition thenBranch maybeElseBranch)) =
-  maybe id resolveStmt maybeElseBranch
-    . resolveStmt thenBranch
-    . resolveExpr condition
-resolveStmt (SomeStmt (While condition body)) =
-  resolveStmt body
-    . resolveExpr condition
-resolveStmt (SomeStmt stmt@(Function name _ _)) =
-  resolveFunction stmt FUNCTION Nothing
-    . define name
-    . declare name
-resolveStmt (SomeStmt (Return keyword returnValue)) =
-  maybe id resolveExpr returnValue
-    . checkFunctionType
- where
-  checkFunctionType resolver
-    | currentFunction resolver == NONE = addError keyword "Can't return from top-level code." resolver
-    | Just _ <- returnValue
-    , currentFunction resolver == INITIALIZER =
-        addError keyword "Can't return a value from an initializer." resolver
-    | otherwise = resolver
 resolveStmt (SomeStmt (Class name superclass methods)) =
   ( case superclass of
       Nothing -> id
@@ -138,7 +110,8 @@ resolveStmt (SomeStmt (Class name superclass methods)) =
                     resolveFunction
                       method
                       (if lexeme methodName == "init" then INITIALIZER else METHOD)
-                      $ Just $ maybe CLASS (const SUBCLASS) superclass
+                      $ Just
+                      $ maybe CLASS (const SUBCLASS) superclass
                 )
             )
             resolver
@@ -163,6 +136,33 @@ resolveStmt (SomeStmt (Class name superclass methods)) =
       )
     . define name
     . declare name
+resolveStmt (SomeStmt (Expression expr)) = resolveExpr expr
+resolveStmt (SomeStmt stmt@(Function name _ _)) =
+  resolveFunction stmt FUNCTION Nothing
+    . define name
+    . declare name
+resolveStmt (SomeStmt (If condition thenBranch maybeElseBranch)) =
+  maybe id resolveStmt maybeElseBranch
+    . resolveStmt thenBranch
+    . resolveExpr condition
+resolveStmt (SomeStmt (Print expr)) = resolveExpr expr
+resolveStmt (SomeStmt (Return keyword returnValue)) =
+  maybe id resolveExpr returnValue
+    . checkFunctionType
+ where
+  checkFunctionType resolver
+    | currentFunction resolver == NONE = addError keyword "Can't return from top-level code." resolver
+    | Just _ <- returnValue
+    , currentFunction resolver == INITIALIZER =
+        addError keyword "Can't return a value from an initializer." resolver
+    | otherwise = resolver
+resolveStmt (SomeStmt (Var variableName variableValue)) =
+  define variableName
+    . resolveExpr variableValue
+    . declare variableName
+resolveStmt (SomeStmt (While condition body)) =
+  resolveStmt body
+    . resolveExpr condition
 
 resolveFunction :: Stmt KFunction -> FunctionType -> Maybe ClassType -> Resolver -> Resolver
 resolveFunction (Function _ parameters body) functionType classType resolverType =
@@ -176,6 +176,7 @@ resolveFunction (Function _ parameters body) functionType classType resolverType
     , currentClass = currentClass resolverType
     }
 
+-- TODO: make alphabetical order
 resolveExpr :: Expr -> Resolver -> Resolver
 resolveExpr expr@(Assign name value) = resolveLocal expr name . resolveExpr value
 resolveExpr (Binary left _ right) = resolveExpr right . resolveExpr left
