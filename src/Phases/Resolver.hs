@@ -176,31 +176,21 @@ resolveFunction (Function _ parameters body) functionType classType resolverType
     , currentClass = currentClass resolverType
     }
 
--- TODO: make alphabetical order
 resolveExpr :: Expr -> Resolver -> Resolver
-resolveExpr expr@(Assign name value) = resolveLocal expr name . resolveExpr value
-resolveExpr (Binary left _ right) = resolveExpr right . resolveExpr left
-resolveExpr (Grouping expr) = resolveExpr expr
-resolveExpr (Unary _ expr) = resolveExpr expr
-resolveExpr expr@(Variable variableToken) =
-  let errorCheck resolver = case scopes resolver of
-        [] -> resolver
-        scope : _ -> case scope Map.!? lexeme variableToken of
-          Nothing -> resolver
-          Just True -> resolver
-          Just False -> addError variableToken "Can't read local variable in its own initializer." resolver
-   in resolveLocal expr variableToken . errorCheck
-resolveExpr (Primary _) = id
-resolveExpr (OrExpr left _ right) =
-  resolveExpr right
-    . resolveExpr left
 resolveExpr (AndExpr left _ right) =
   resolveExpr right
     . resolveExpr left
+resolveExpr expr@(Assign name value) = resolveLocal expr name . resolveExpr value
+resolveExpr (Binary left _ right) = resolveExpr right . resolveExpr left
 resolveExpr (Call caller _ arguments) =
   (\resolver -> foldl (flip resolveExpr) resolver arguments)
     . resolveExpr caller
 resolveExpr (Get object _) = resolveExpr object
+resolveExpr (Grouping expr) = resolveExpr expr
+resolveExpr (OrExpr left _ right) =
+  resolveExpr right
+    . resolveExpr left
+resolveExpr (Primary _) = id
 resolveExpr (Set object _ value) =
   resolveExpr value
     . resolveExpr object
@@ -219,3 +209,12 @@ resolveExpr expr@(This keyword) = resolveLocal expr keyword . checkClassType
     if currentClass resolver == NO_CLASS
       then addError keyword "Can't use 'this' outside of a class." resolver
       else resolver
+resolveExpr (Unary _ expr) = resolveExpr expr
+resolveExpr expr@(Variable variableToken) =
+  let errorCheck resolver = case scopes resolver of
+        [] -> resolver
+        scope : _ -> case scope Map.!? lexeme variableToken of
+          Nothing -> resolver
+          Just True -> resolver
+          Just False -> addError variableToken "Can't read local variable in its own initializer." resolver
+   in resolveLocal expr variableToken . errorCheck
