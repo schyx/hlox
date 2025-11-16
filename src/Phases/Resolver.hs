@@ -118,20 +118,17 @@ resolveStmt (SomeStmt (Class name superclass methods)) =
             methods
       )
     . (\resolver -> resolver{scopes = Map.insert "this" True (head $ scopes resolver) : tail (scopes resolver)})
-    . beginScope -- TODO: make below more concise based on superclass is Nothing or not
-    . case superclass of
-      Nothing -> id
-      Just _ ->
-        ( \resolver -> resolver{scopes = Map.insert "super" True (head $ scopes resolver) : tail (scopes resolver)}
-        )
-          . beginScope
-    . maybe id resolveExpr superclass
+    . beginScope
     . ( case superclass of
           Nothing -> id
           Just (Variable className) ->
-            if lexeme name == lexeme className
-              then addError className "A class can't inherit from itself."
-              else id
+            ( \resolver -> resolver{scopes = Map.insert "super" True (head $ scopes resolver) : tail (scopes resolver)}
+            )
+              . beginScope
+              . resolveExpr (Variable className)
+              . if lexeme name == lexeme className
+                then addError className "A class can't inherit from itself."
+                else id
           Just _ -> error "TODO: GADTs for Exprs"
       )
     . define name
