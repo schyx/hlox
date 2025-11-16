@@ -117,16 +117,13 @@ classDeclaration =
     <*> (Just . Variable <$> (match (== LESS) *> consume IDENTIFIER "Expect superclass name.") <||> pure Nothing)
     <*> (consume LEFT_BRACE "Expect '{' before class body." *> parseMethods <* consume RIGHT_BRACE "Expect '}' after class body.")
  where
-  -- TODO: fix this somehow?
   parseMethods = MaybeT $ Parser $ \(inErrs, inToks) ->
     let output = runPlanter (runMaybeT $ many $ createCallable "method") (inErrs, inToks)
-     in case output of
-          Nothing -> error "this shouldn't happen"
-          Just ((_, _), Nothing) -> error "this also shouldn't happen"
-          Just ((outErrs, outToks), Just methods) ->
-            if length outErrs == length inErrs
-              then Just ((outErrs, outToks), Just methods)
-              else Just ((outErrs, syncTokens outToks), Nothing)
+        ((outErrs, outToks), justMethods) = fromMaybe undefined output
+        methods = fromMaybe undefined justMethods
+     in if length outErrs == length inErrs
+          then Just ((outErrs, outToks), Just methods)
+          else Just ((outErrs, syncTokens outToks), Nothing)
 
 functionDeclaration :: MaybeT Planter (Stmt KFunction)
 functionDeclaration = match (== FUN) *> createCallable "function"
