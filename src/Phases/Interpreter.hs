@@ -152,12 +152,7 @@ interpretExpr (Call callee leftParenthesis argumentExpressions) = do
           $ runtimeError
             leftParenthesis
           $ "Expected " ++ show (length parameters) ++ " arguments but got " ++ show (length argument) ++ "."
-  interpretExprs :: [Expr] -> InterpreterOutput [SomeValue] -- TODO maybe try using fold?
-  interpretExprs [] = return []
-  interpretExprs (expr : exprs) = do
-    value <- interpretExpr expr
-    values <- interpretExprs exprs
-    return $ value : values
+  interpretExprs exprs = reverse <$> foldM (\buildup expr -> (: buildup) <$> interpretExpr expr) [] exprs
 interpretExpr expr@(Assign name assigningExpression) = do
   value <- interpretExpr assigningExpression
   assign expr name value
