@@ -48,7 +48,7 @@ throwRuntimeError = lift . throwError
 interpret :: SomeStmt -> InterpreterOutput ()
 interpret (SomeStmt (Print expr)) = interpretExpr expr >>= liftIO . print
 interpret (SomeStmt (Expression expr)) = void $ interpretExpr expr
-interpret (SomeStmt (Var name initializer)) = interpretExpr initializer >>= define name
+interpret (SomeStmt (Var name initializer)) = interpretExpr initializer >>= define (lexeme name)
 interpret (SomeStmt (Block stmts)) = createChildEnv >> execBlock stmts >> changeToParent
 interpret (SomeStmt (If condition ifBranch (Just elseBranch))) = do
   value <- interpretExpr condition
@@ -59,11 +59,11 @@ interpret (SomeStmt (If condition ifBranch Nothing)) = do
 interpret stmt@(SomeStmt (While condition whileBlock)) = do
   value <- interpretExpr condition
   when (isTruthy value) (interpret whileBlock >> interpret stmt)
-interpret (SomeStmt function@(Function functionName _ _)) = functionToValue False function >>= define functionName . SomeValue
+interpret (SomeStmt function@(Function functionName _ _)) = functionToValue False function >>= define (lexeme functionName) . SomeValue
 interpret (SomeStmt (Return _ Nothing)) = throwError $ SomeValue VNil
 interpret (SomeStmt (Return _ (Just value))) = interpretExpr value >>= throwError
 interpret (SomeStmt (Class name superclass classMethods)) = do
-  define name $ SomeValue VNil
+  define (lexeme name) $ SomeValue VNil
   superclassValue <- case superclass of
     Nothing -> return Nothing
     Just superclassExpr@(Variable superclassName) -> do
@@ -71,7 +71,7 @@ interpret (SomeStmt (Class name superclass classMethods)) = do
       case value of
         (SomeValue classValue@VClass{}) -> do
           createChildEnv
-          define MkToken{tokenType = SUPER, offset = 0, literal = Nothing, line = 0, lexeme = "super"} $ SomeValue classValue
+          define "super" $ SomeValue classValue
           return $ Just classValue
         _ -> throwRuntimeError $ runtimeError superclassName "Superclass must be a class."
   createChildEnv
@@ -96,7 +96,7 @@ functionToValue isInitializer (Function functionName functionParameters body) = 
       functionF args = do
         restoreRunningEnv definingInterpreter
         createChildEnv
-        foldM_ (\_ (token, value) -> define token value) () (zip functionParameters args)
+        foldM_ (\_ (token, value) -> define token value) () (zip (map lexeme functionParameters) args)
         run <- runExceptT $ execBlock body
         case run of
           Left value -> return value
@@ -345,11 +345,11 @@ changeToParent = do
     Just parentEnvironmentId -> put interpreter{currentEnvironment = parentEnvironmentId}
     Nothing -> error "can't change to parent when no parent"
 
-define :: (MonadState Interpreter m) => Token -> SomeValue -> m ()
-define token value = do
+define :: (MonadState Interpreter m) => String -> SomeValue -> m ()
+define name value = do
   interpreter <- get
   let Environment envTable parent = environmentTable interpreter Map.! currentEnvironment interpreter
-      definedTable = Map.insert (lexeme token) value envTable
+      definedTable = Map.insert name value envTable
       definedEnvironment = Environment definedTable parent
   put interpreter{environmentTable = Map.insert (currentEnvironment interpreter) definedEnvironment (environmentTable interpreter)}
 
