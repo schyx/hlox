@@ -273,25 +273,23 @@ data Interpreter = Interpreter
   }
 
 data Environment = Environment (Map.Map String SomeValue) (Maybe EnvID)
-  deriving (Show)
 
 newtype EnvID = EnvID Int
-  deriving (Show, Eq, Ord)
+  deriving (Eq, Ord)
 
 nextLargest :: EnvID -> EnvID
 nextLargest (EnvID envId) = EnvID $ envId + 1
 
 newtype InstanceID = InstanceID Int
-  deriving (Show, Eq, Ord)
+  deriving (Eq, Ord)
 
 incrementInstanceId :: InstanceID -> InstanceID
 incrementInstanceId (InstanceID instanceId) = InstanceID $ instanceId + 1
 
 newtype FunctionID = FunctionID Int
-  deriving (Show, Eq, Ord)
+  deriving (Eq, Ord)
 
 newtype FuncCounter = FuncCounter {getFuncCounter :: Map.Map ([Token], Token, String, Bool) FunctionID}
-  deriving (Show)
 
 addFunction ::
   [Token] ->
@@ -494,7 +492,7 @@ data ValueKind
   | ValueFunction
   | ValueClass
   | ValueInstance
-  deriving (Eq, Show)
+  deriving (Eq)
 
 data SomeValue where
   SomeValue :: Value k -> SomeValue

@@ -11,7 +11,6 @@ import Parser (Parser (Parser, runParser))
 import Tokens
 
 data ScannerData = ScannerData {restOfInput :: String, getScannerLine :: Int, getScannerOffset :: Int}
-  deriving (Show)
 
 lineAndOffset :: ScannerData -> (Int, Int)
 lineAndOffset scannerData = (getScannerLine scannerData, getScannerOffset scannerData)

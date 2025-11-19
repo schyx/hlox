@@ -30,7 +30,7 @@ data Token = MkToken
   , line :: Int
   , offset :: Int
   }
-  deriving (Eq, Ord, Show)
+  deriving (Eq, Ord)
 
 data TokenType
   = LEFT_PAREN
@@ -75,4 +75,4 @@ data TokenType
   | VAR
   | WHILE
   | EOF
-  deriving (Eq, Ord, Show)
+  deriving (Eq, Ord)
