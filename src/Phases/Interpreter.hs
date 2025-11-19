@@ -435,16 +435,15 @@ getSuper distance = do
   superValue <- getAt distance "super"
   case superValue of
     (SomeValue super@VClass{}) -> return super
-    _ -> error "TODO: think about this?"
+    _ -> error "No super value in this environment"
 
 getThis :: Int -> InterpreterOutput (Value 'ValueInstance)
 getThis distance = do
   thisValue <- getAt distance "this"
   case thisValue of
     (SomeValue this@VInstance{}) -> return this
-    _ -> error "TODO: think about this?"
+    _ -> error "No this value in this environment"
 
--- TODO: fix this to make it more total?
 getAncestor :: Int -> EnvID -> InterpreterOutput EnvID
 getAncestor 0 childId = return childId
 getAncestor distance childId = do
