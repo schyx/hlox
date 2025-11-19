@@ -9,7 +9,7 @@ import Control.Monad (when)
 import Control.Monad.Trans.Maybe (MaybeT (MaybeT, runMaybeT))
 import Data.Functor (($>))
 import Data.Maybe (fromMaybe)
-import Error (parseError)
+import Error (Error (..))
 import Parser (Parser (Parser, runParser))
 import Phases.Expr
 import Phases.Stmt
@@ -18,14 +18,14 @@ import Tokens
 maxArgumentNumber :: Int
 maxArgumentNumber = 255
 
-type TreeResult = Either [String] [SomeStmt]
+type TreeResult = Either [Error] [SomeStmt]
 
-type Planter = Parser ([String], [Token])
+type Planter = Parser ([Error], [Token])
 
-makePlanter :: (([String], [Token]) -> Maybe (([String], [Token]), a)) -> Planter a
+makePlanter :: (([Error], [Token]) -> Maybe (([Error], [Token]), a)) -> Planter a
 makePlanter = Parser
 
-runPlanter :: Planter a -> (([String], [Token]) -> Maybe (([String], [Token]), a))
+runPlanter :: Planter a -> (([Error], [Token]) -> Maybe (([Error], [Token]), a))
 runPlanter = runParser
 
 parse :: [Token] -> TreeResult
@@ -83,21 +83,21 @@ consume :: TokenType -> String -> MaybeT Planter Token
 consume desiredType message = MaybeT $ makePlanter $ \(inErrs, inTokens) ->
   let firstToken = head inTokens
       restTokens = tail inTokens
-      errsIfFail = parseError firstToken message : inErrs
+      errsIfFail = ParseError firstToken message : inErrs
    in Just $
         if tokenType firstToken == desiredType
           then ((inErrs, restTokens), Just firstToken)
           else ((errsIfFail, syncTokens inTokens), Nothing)
 
-addParseError :: String -> MaybeT Planter a
+addParseError :: Error -> MaybeT Planter a
 addParseError errMessage = MaybeT $ makePlanter $ \(inErrs, tokens) ->
   Just ((errMessage : inErrs, syncTokens tokens), Nothing)
 
-addNonBlockingParseError :: String -> MaybeT Planter ()
+addNonBlockingParseError :: Error -> MaybeT Planter ()
 addNonBlockingParseError errMessage = MaybeT $ makePlanter $ \(inErrs, tokens) ->
   Just ((errMessage : inErrs, tokens), Just ())
 
-expressionWrapper :: [Token] -> Either [String] SomeExpr
+expressionWrapper :: [Token] -> Either [Error] SomeExpr
 expressionWrapper =
   (\((errs, _), expr) -> if null errs then Right expr else Left errs)
     . fromMaybe undefined
@@ -145,7 +145,7 @@ createCallable callableType = do
   addParameters buildup = do
     when (length buildup >= maxArgumentNumber) $ do
       firstToken <- getFirstToken
-      let tooManyParamsMessage = parseError firstToken ("Can't have more than " ++ show maxArgumentNumber ++ " parameters.")
+      let tooManyParamsMessage = ParseError firstToken ("Can't have more than " ++ show maxArgumentNumber ++ " parameters.")
       addNonBlockingParseError tooManyParamsMessage
     parameter <- match (== IDENTIFIER)
     let newBuildup = parameter : buildup
@@ -171,7 +171,7 @@ variableDeclaration = do
     Var variableName <$> (match (== EQUAL) *> expression <* consume SEMICOLON "Expect ';' after variable declaration.")
   noVal variableName = Var variableName <$> (match (== SEMICOLON) $> SomeExpr (Primary Nil))
   unexpectedToken =
-    (parseError <$> match (const True) <*> pure "Expect ';' after variable declaration.")
+    (ParseError <$> match (const True) <*> pure "Expect ';' after variable declaration.")
       >>= addParseError
 
 statement :: MaybeT Planter SomeStmt
@@ -249,7 +249,7 @@ buildBlock :: [SomeStmt] -> MaybeT Planter [SomeStmt]
 buildBlock buildup = rightBrace <||> endOfFile <||> moreStmts
  where
   rightBrace = match (== RIGHT_BRACE) $> reverse buildup
-  endOfFile = check (== EOF) >>= addParseError . flip parseError "Expect '}' after block."
+  endOfFile = check (== EOF) >>= addParseError . flip ParseError "Expect '}' after block."
   moreStmts = declaration >>= buildBlock . (: buildup)
 
 expressionStatement :: MaybeT Planter (Stmt KExpression)
@@ -269,7 +269,7 @@ assignment = do
       case expr of
         (SomeExpr (Variable token)) -> return $ SomeExpr $ Assign token value
         (SomeExpr (Get object name)) -> return $ SomeExpr $ Set object name value
-        _ -> SomeExpr (This equalSign) <$ addNonBlockingParseError (parseError equalSign "Invalid assignment target.")
+        _ -> SomeExpr (This equalSign) <$ addNonBlockingParseError (ParseError equalSign "Invalid assignment target.")
     )
     <||> return expr
 
@@ -337,7 +337,7 @@ call = callOrGet <||> primary
   argsHelper buildup = do
     when (length buildup >= maxArgumentNumber) $ do
       firstToken <- getFirstToken
-      let tooManyArgsMsg = parseError firstToken ("Can't have more than " ++ show maxArgumentNumber ++ " arguments.")
+      let tooManyArgsMsg = ParseError firstToken ("Can't have more than " ++ show maxArgumentNumber ++ " arguments.")
       addNonBlockingParseError tooManyArgsMsg
     arg <- expression
     let newBuildup = arg : buildup
@@ -352,4 +352,4 @@ primary = createThis <||> createLiteral <||> createGrouping <||> createSuper <||
   createGrouping = SomeExpr . Grouping <$> (match (== LEFT_PAREN) *> expression <* consume RIGHT_PAREN "Expect ')' after expression.")
   createSuper = SomeExpr <$> (Super <$> match (== SUPER) <*> (consume DOT "Expect '.' after 'super'." *> consume IDENTIFIER "Expect superclass method name."))
   createVariable = SomeExpr . Variable <$> match (== IDENTIFIER)
-  noPrimary = parseError <$> match (const True) <*> pure "Expect expression." >>= addParseError
+  noPrimary = ParseError <$> match (const True) <*> pure "Expect expression." >>= addParseError

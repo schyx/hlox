@@ -1,5 +1,6 @@
 module Main (main) where
 
+import Error
 import Phases.Interpreter
 import Phases.Parse
 import Phases.Resolver
@@ -52,7 +53,7 @@ runFile filepath = do
         toStderr $ scanErrs ++ parseErrs
         exitWith $ ExitFailure 65
  where
-  go :: Interpreter -> [SomeStmt] -> IO (Either String Interpreter)
+  go :: Interpreter -> [SomeStmt] -> IO (Either Error Interpreter)
   go e (s : rest) = do
     newEnvOrErr <- runInterp e s
     case newEnvOrErr of
@@ -60,8 +61,8 @@ runFile filepath = do
       Right newEnv -> go newEnv rest
   go e [] = return $ Right e
 
-toStderr :: [String] -> IO ()
+toStderr :: [Error] -> IO ()
 toStderr [] = return ()
 toStderr (err : errs) = do
-  hPutStrLn stderr err
+  hPutStrLn stderr $ showError err
   toStderr errs

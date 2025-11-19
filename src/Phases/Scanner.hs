@@ -6,7 +6,7 @@ import Control.Applicative (Alternative (many, (<|>)))
 import Data.Char (isAlpha, isAlphaNum, isDigit)
 import qualified Data.Map as Map
 import Data.Maybe (fromMaybe, listToMaybe)
-import Error (report)
+import Error (Error (..))
 import Parser (Parser (Parser, runParser))
 import Tokens
 
@@ -38,7 +38,7 @@ makeLoxScanner = Parser
 runLoxScanner :: LoxScanner a -> (ScannerData -> Maybe (ScannerData, a))
 runLoxScanner = runParser
 
-type ScanResult = ([String], [Token])
+type ScanResult = ([Error], [Token])
 
 scanTokens :: String -> ScanResult
 scanTokens contents =
@@ -59,7 +59,7 @@ scanTokens contents =
   addResult (errors, tokens) eofLine ((Left err) : others) = addResult (err : errors, tokens) eofLine others
   addResult (errors, tokens) eofLine ((Right token) : others) = addResult (errors, token : tokens) eofLine others
 
-scanner :: LoxScanner (Either String Token)
+scanner :: LoxScanner (Either Error Token)
 scanner =
   ignore
     *> (identifierScanner <|> numberScanner <|> twoCharTokenScanner <|> singleCharToken <|> stringScanner <|> unknownCharacterScanner)
@@ -74,7 +74,7 @@ whitespace = spanSNoEmpty (`elem` " \t\r")
 newline :: LoxScanner (String, (Int, Int))
 newline = spanSNoEmpty (== '\n')
 
-identifierScanner :: LoxScanner (Either String Token)
+identifierScanner :: LoxScanner (Either Error Token)
 identifierScanner =
   toIdentifier
     <$> ( combineStringMetadata
@@ -82,7 +82,7 @@ identifierScanner =
             <*> spanScanner (\c -> isAlphaNum c || c == '_')
         )
  where
-  toIdentifier :: (String, (Int, Int)) -> Either String Token
+  toIdentifier :: (String, (Int, Int)) -> Either Error Token
   toIdentifier =
     createToken
       (\string -> fromMaybe IDENTIFIER $ Map.lookup string identifierTable)
@@ -94,7 +94,7 @@ identifierScanner =
       )
       id
 
-stringScanner :: LoxScanner (Either String Token)
+stringScanner :: LoxScanner (Either Error Token)
 stringScanner =
   charScanner (== '"')
     *> ( flip ($)
@@ -104,9 +104,9 @@ stringScanner =
  where
   toStringIdentifier = createToken (const STRING) (Just . Str) (\string -> "\"" ++ string ++ "\"")
   unterminatedString = makeLoxScanner $ \inData ->
-    Just (inData, const (Left $ report (getScannerLine inData) "" "Unterminated string."))
+    Just (inData, const (Left $ ScanError (getScannerLine inData) "" "Unterminated string."))
 
-numberScanner :: LoxScanner (Either String Token)
+numberScanner :: LoxScanner (Either Error Token)
 numberScanner =
   createToken (const NUMBER) (Just . Number . read) id
     <$> ( ( combineThreeStrings
@@ -119,7 +119,7 @@ numberScanner =
  where
   combineThreeStrings a b c = combineStringMetadata a $ combineStringMetadata b c
 
-singleCharToken :: LoxScanner (Either String Token)
+singleCharToken :: LoxScanner (Either Error Token)
 singleCharToken = addSingleCharToken <$> charScanner (`elem` "(){},.-+;*!>=</")
  where
   addSingleCharToken (char, (charLine, charOffset)) =
@@ -132,7 +132,7 @@ singleCharToken = addSingleCharToken <$> charScanner (`elem` "(){},.-+;*!>=</")
         , lexeme = [char]
         }
 
-twoCharTokenScanner :: LoxScanner (Either String Token)
+twoCharTokenScanner :: LoxScanner (Either Error Token)
 twoCharTokenScanner = addTwoCharToken <$> twoCharScanner (`elem` twoCharTokens)
  where
   addTwoCharToken = createToken (twoCharTokenTable Map.!) (const Nothing) id
@@ -141,14 +141,14 @@ twoCharTokenScanner = addTwoCharToken <$> twoCharScanner (`elem` twoCharTokens)
 commentScanner :: LoxScanner (String, (Int, Int))
 commentScanner = twoCharScanner (== ('/', '/')) <* spanScanner (/= '\n')
 
-unknownCharacterScanner :: LoxScanner (Either String Token)
+unknownCharacterScanner :: LoxScanner (Either Error Token)
 unknownCharacterScanner = makeLoxScanner $ \inData ->
   if null $ restOfInput inData
     then Nothing
     else
       Just
         ( increment inData
-        , Left $ report (getScannerLine inData) "" "Unexpected character."
+        , Left $ ScanError (getScannerLine inData) "" "Unexpected character."
         )
 
 twoCharScanner :: ((Char, Char) -> Bool) -> LoxScanner (String, (Int, Int))
@@ -207,7 +207,7 @@ createToken ::
   (String -> Maybe Literal) ->
   (String -> String) ->
   (String, (Int, Int)) ->
-  Either String Token
+  Either Error Token
 createToken toTokenType toLiteral toLexeme (string, (scannerLine, scannerOffset)) =
   Right $
     MkToken

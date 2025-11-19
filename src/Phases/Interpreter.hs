@@ -19,7 +19,7 @@ import Control.Monad.Trans.Class (lift)
 import qualified Data.Map as Map
 import Data.Maybe (fromMaybe, isNothing)
 import Data.Time.Clock.POSIX (getPOSIXTime)
-import Error
+import Error (Error (..), showError)
 import Numeric (showFFloat)
 import Phases.Expr
 import Phases.Resolver (Locals (resolverMap))
@@ -27,12 +27,12 @@ import Phases.Stmt
 import System.IO (hPutStrLn, stderr)
 import Tokens
 
-runInterp :: Interpreter -> SomeStmt -> IO (Either String Interpreter)
+runInterp :: Interpreter -> SomeStmt -> IO (Either Error Interpreter)
 runInterp startInterpreter stmt = do
   intermediate <- runExceptT $ runStateT (runExceptT runStmt) startInterpreter
   case intermediate of
     Left err -> do
-      hPutStrLn stderr err
+      hPutStrLn stderr $ showError err
       return $ Left err
     Right (_, interpreter) -> return $ Right interpreter
  where
@@ -40,9 +40,9 @@ runInterp startInterpreter stmt = do
   runStmt = do
     interpret stmt
 
-type InterpreterOutput a = ExceptT SomeValue (StateT Interpreter (ExceptT String IO)) a
+type InterpreterOutput a = ExceptT SomeValue (StateT Interpreter (ExceptT Error IO)) a
 
-throwRuntimeError :: String -> InterpreterOutput a
+throwRuntimeError :: Error -> InterpreterOutput a
 throwRuntimeError = lift . throwError
 
 interpret :: SomeStmt -> InterpreterOutput ()
@@ -73,7 +73,7 @@ interpret (SomeStmt (Class name superclass classMethods)) = do
           createChildEnv
           define "super" $ SomeValue classValue
           return $ Just classValue
-        _ -> throwRuntimeError $ runtimeError superclassName "Superclass must be a class."
+        _ -> throwRuntimeError $ InterpretError superclassName "Superclass must be a class."
   createChildEnv
   klass <- getKlass superclassValue
   changeToParent
@@ -92,7 +92,7 @@ interpret (SomeStmt (Class name superclass classMethods)) = do
 functionToValue :: Bool -> Stmt 'KFunction -> InterpreterOutput (Value 'ValueFunction)
 functionToValue isInitializer (Function functionName functionParameters body) = do
   definingInterpreter <- get
-  let functionF :: [SomeValue] -> StateT Interpreter (ExceptT String IO) SomeValue
+  let functionF :: [SomeValue] -> StateT Interpreter (ExceptT Error IO) SomeValue
       functionF args = do
         restoreRunningEnv definingInterpreter
         createChildEnv
@@ -126,11 +126,11 @@ interpretExpr (SomeExpr (Call callee leftParenthesis argumentExpressions)) = do
         Nothing ->
           if null arguments
             then return $ SomeValue inst
-            else throwRuntimeError $ runtimeError leftParenthesis $ "Expected 0 arguments but got " ++ show (length arguments) ++ "."
+            else throwRuntimeError $ InterpretError leftParenthesis $ "Expected 0 arguments but got " ++ show (length arguments) ++ "."
         Just initializerFunction@(VFunction _ _ _ _ functionEnvironment _ _) -> do
           assignThis inst functionEnvironment
           callFunction interpreter arguments initializerFunction
-    _ -> throwRuntimeError $ runtimeError leftParenthesis "Can only call functions and classes."
+    _ -> throwRuntimeError $ InterpretError leftParenthesis "Can only call functions and classes."
  where
   callFunction :: Interpreter -> [SomeValue] -> Value 'ValueFunction -> InterpreterOutput SomeValue
   callFunction interpreter argument (VFunction parameters _ _ isInitializer _ function _) =
@@ -142,7 +142,7 @@ interpretExpr (SomeExpr (Call callee leftParenthesis argumentExpressions)) = do
         return output
       else
         throwRuntimeError
-          $ runtimeError
+          $ InterpretError
             leftParenthesis
           $ "Expected " ++ show (length parameters) ++ " arguments but got " ++ show (length argument) ++ "."
   interpretExprs exprs = reverse <$> foldM (\buildup expr -> (: buildup) <$> interpretExpr expr) [] exprs
@@ -202,7 +202,7 @@ interpretExpr (SomeExpr (Set object name value)) = do
       interpretedValue <- interpretExpr value
       setProperty iid name interpretedValue
       return interpretedValue
-    _ -> throwRuntimeError $ runtimeError name "Only instances have fields."
+    _ -> throwRuntimeError $ InterpretError name "Only instances have fields."
 interpretExpr expr@(SomeExpr (Super _ method)) = do
   distance <- gets $ (Map.! expr) . locals
   superclass <- getSuper distance
@@ -223,7 +223,7 @@ getFieldOrMethod name (SomeValue inst@(VInstance _ properties loxClass _)) =
   case properties Map.!? lexeme name of
     Just value -> return value
     Nothing -> SomeValue <$> findMethod name inst loxClass
-getFieldOrMethod name _ = throwRuntimeError $ runtimeError name "Only instances have properties."
+getFieldOrMethod name _ = throwRuntimeError $ InterpretError name "Only instances have properties."
 
 findMethod :: Token -> Value 'ValueInstance -> Value 'ValueClass -> InterpreterOutput (Value 'ValueFunction)
 findMethod name inst (VClass _ superclass methods) =
@@ -233,22 +233,22 @@ findMethod name inst (VClass _ superclass methods) =
       addFunction params leftParenthesis functionName isInitializer definingEnvironment function
     Nothing ->
       maybe
-        (throwRuntimeError $ runtimeError name $ "Undefined property '" ++ lexeme name ++ "'.")
+        (throwRuntimeError $ InterpretError name $ "Undefined property '" ++ lexeme name ++ "'.")
         (findMethod name inst)
         superclass
 
 plusOperator :: SomeValue -> SomeValue -> Token -> InterpreterOutput SomeValue
 plusOperator (SomeValue (VNumber left)) (SomeValue (VNumber right)) _ = return $ SomeValue $ VNumber $ left + right
 plusOperator (SomeValue (VStr left)) (SomeValue (VStr right)) _ = return $ SomeValue $ VStr $ left ++ right
-plusOperator _ _ operator = throwRuntimeError $ runtimeError operator "Operands must be two numbers or two strings."
+plusOperator _ _ operator = throwRuntimeError $ InterpretError operator "Operands must be two numbers or two strings."
 
 toNumberPair :: SomeValue -> SomeValue -> Token -> InterpreterOutput (Double, Double)
 toNumberPair (SomeValue (VNumber left)) (SomeValue (VNumber right)) _ = return (left, right)
-toNumberPair _ _ operator = throwRuntimeError $ runtimeError operator "Operands must be numbers."
+toNumberPair _ _ operator = throwRuntimeError $ InterpretError operator "Operands must be numbers."
 
 toNumber :: SomeValue -> Token -> InterpreterOutput Double
 toNumber (SomeValue (VNumber number)) _ = return number
-toNumber _ token = throwRuntimeError $ runtimeError token "Operand must be a number."
+toNumber _ token = throwRuntimeError $ InterpretError token "Operand must be a number."
 
 isTruthy :: SomeValue -> Bool
 isTruthy (SomeValue VNil) = False
@@ -291,7 +291,7 @@ addFunction ::
   String ->
   Bool ->
   EnvID ->
-  ([SomeValue] -> StateT Interpreter (ExceptT String IO) SomeValue) ->
+  ([SomeValue] -> StateT Interpreter (ExceptT Error IO) SomeValue) ->
   InterpreterOutput (Value 'ValueFunction)
 addFunction parameters leftParenthesis functionName isInitializer definingEnvironment function = do
   interpreter <- get
@@ -374,7 +374,7 @@ assignTok token value = do
         put interpreter{currentEnvironment = parentEnv}
         assignTok token value
         put interpreter{currentEnvironment = currentEnvironment interpreter}
-      Nothing -> throwRuntimeError $ runtimeError token $ "Undefined variable '" ++ lexeme token ++ "'."
+      Nothing -> throwRuntimeError $ InterpretError token $ "Undefined variable '" ++ lexeme token ++ "'."
 
 assignThis :: (MonadState Interpreter m) => Value 'ValueInstance -> EnvID -> m ()
 assignThis value toDefineIn = do
@@ -410,7 +410,7 @@ assignGlobal token value = do
   case globalTable Map.!? lexeme token of
     Just _ ->
       put interpreter{environmentTable = Map.insert (EnvID 0) newGlobalEnv $ environmentTable interpreter}
-    Nothing -> throwRuntimeError $ runtimeError token $ "Undefined variable '" ++ lexeme token ++ "'."
+    Nothing -> throwRuntimeError $ InterpretError token $ "Undefined variable '" ++ lexeme token ++ "'."
 
 lookupVariable :: Token -> SomeExpr -> InterpreterOutput SomeValue
 lookupVariable name expr = do
@@ -419,7 +419,7 @@ lookupVariable name expr = do
     Nothing ->
       let Environment envTable _ = environmentTable interpreter Map.! EnvID 0
        in case envTable Map.!? lexeme name of
-            Nothing -> throwRuntimeError $ runtimeError name $ "Undefined variable '" ++ lexeme name ++ "'."
+            Nothing -> throwRuntimeError $ InterpretError name $ "Undefined variable '" ++ lexeme name ++ "'."
             Just value -> return value
     Just distance -> getAt distance $ lexeme name
 
@@ -511,7 +511,7 @@ data Value (k :: ValueKind) where
   VBoolean :: Bool -> Value 'ValueBoolean
   VNil :: Value 'ValueNil
   VCall :: Int -> Token -> String -> Value 'ValueCall
-  VFunction :: [Token] -> Token -> String -> Bool -> EnvID -> ([SomeValue] -> StateT Interpreter (ExceptT String IO) SomeValue) -> FunctionID -> Value 'ValueFunction
+  VFunction :: [Token] -> Token -> String -> Bool -> EnvID -> ([SomeValue] -> StateT Interpreter (ExceptT Error IO) SomeValue) -> FunctionID -> Value 'ValueFunction
   VClass :: String -> Maybe (Value 'ValueClass) -> (Map.Map String (Value 'ValueFunction)) -> Value 'ValueClass
   VInstance :: String -> (Map.Map String SomeValue) -> Value 'ValueClass -> InstanceID -> Value 'ValueInstance
 

@@ -5,7 +5,7 @@ module Phases.Resolver (resolve, Locals (..)) where
 
 import qualified Data.Map as Map
 import Data.Maybe (fromMaybe)
-import Error (resolveError)
+import Error (Error (..))
 import Phases.Expr (Expr (..), SomeExpr (..))
 import Phases.Stmt (SomeStmt (SomeStmt), Stmt (..), StmtKind (..))
 import Tokens (Token (lexeme))
@@ -19,7 +19,7 @@ data ClassType = NO_CLASS | CLASS | SUBCLASS
   deriving (Eq)
 
 data Resolver = Resolver
-  { errors :: [String]
+  { errors :: [Error]
   , currentResolverMap :: Map.Map SomeExpr Int
   , scopes :: [Map.Map String Bool]
   , currentFunction :: FunctionType
@@ -27,7 +27,7 @@ data Resolver = Resolver
   }
 
 addError :: Token -> String -> Resolver -> Resolver
-addError token errMessage resolver = resolver{errors = resolveError token errMessage : errors resolver}
+addError token errMessage resolver = resolver{errors = ResolveError token errMessage : errors resolver}
 
 beginScope :: Resolver -> Resolver
 beginScope resolver = resolver{scopes = Map.empty : scopes resolver}
@@ -43,7 +43,7 @@ declare variableName resolver = case scopes resolver of
       Just _ ->
         resolver
           { errors =
-              resolveError
+              ResolveError
                 variableName
                 "Already a variable with this name in this scope."
                 : errors resolver
@@ -56,7 +56,7 @@ define variableName resolver = case scopes resolver of
   [] -> resolver
   scope : rest -> resolver{scopes = Map.insert (lexeme variableName) True scope : rest}
 
-resolve :: [SomeStmt] -> Either [String] Locals
+resolve :: [SomeStmt] -> Either [Error] Locals
 resolve inputStmts =
   let emptyResolverType =
         Resolver
