@@ -63,23 +63,17 @@ interpret (SomeStmt function@(Function functionName _ _)) = functionToValue Fals
 interpret (SomeStmt (Return _ Nothing)) = throwError $ SomeValue VNil
 interpret (SomeStmt (Return _ (Just value))) = interpretExpr value >>= throwError
 interpret (SomeStmt (Class name superclass classMethods)) = do
+  define name $ SomeValue VNil
   superclassValue <- case superclass of
     Nothing -> return Nothing
     Just superclassExpr@(Variable superclassName) -> do
       value <- interpretExpr $ SomeExpr superclassExpr
       case value of
-        (SomeValue classValue@VClass{}) -> return $ Just classValue
+        (SomeValue classValue@VClass{}) -> do
+          createChildEnv
+          define MkToken{tokenType = SUPER, offset = 0, literal = Nothing, line = 0, lexeme = "super"} $ SomeValue classValue
+          return $ Just classValue
         _ -> throwRuntimeError $ runtimeError superclassName "Superclass must be a class."
-  define name $ SomeValue VNil
-  unless
-    (isNothing superclass)
-    ( do
-        createChildEnv
-        define
-          MkToken{tokenType = SUPER, offset = 0, literal = Nothing, line = 0, lexeme = "super"}
-          $ SomeValue
-          $ fromMaybe undefined superclassValue
-    )
   createChildEnv
   klass <- getKlass superclassValue
   changeToParent
