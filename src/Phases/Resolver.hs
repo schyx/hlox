@@ -6,11 +6,11 @@ module Phases.Resolver (resolve, Locals (..)) where
 import qualified Data.Map as Map
 import Data.Maybe (fromMaybe)
 import Error (resolveError)
-import Phases.Expr (Expr (..))
+import Phases.Expr (Expr (..), SomeExpr (..))
 import Phases.Stmt (SomeStmt (SomeStmt), Stmt (..), StmtKind (..))
 import Tokens (Token (lexeme))
 
-newtype Locals = Locals {resolverMap :: Map.Map Expr Int}
+newtype Locals = Locals {resolverMap :: Map.Map SomeExpr Int}
 
 data FunctionType = NONE | FUNCTION | METHOD | INITIALIZER
   deriving (Eq)
@@ -20,7 +20,7 @@ data ClassType = NO_CLASS | CLASS | SUBCLASS
 
 data Resolver = Resolver
   { errors :: [String]
-  , currentResolverMap :: Map.Map Expr Int
+  , currentResolverMap :: Map.Map SomeExpr Int
   , scopes :: [Map.Map String Bool]
   , currentFunction :: FunctionType
   , currentClass :: ClassType
@@ -75,12 +75,12 @@ resolve inputStmts =
               }
         else Left $ reverse $ errors outputResolverType
 
-resolveName :: Expr -> Maybe Int -> Resolver -> Resolver
+resolveName :: SomeExpr -> Maybe Int -> Resolver -> Resolver
 resolveName expr maybeDepth resolver = case maybeDepth of
   Nothing -> resolver
   Just depth -> resolver{currentResolverMap = Map.insert expr depth $ currentResolverMap resolver}
 
-resolveLocal :: Expr -> Token -> Resolver -> Resolver
+resolveLocal :: SomeExpr -> Token -> Resolver -> Resolver
 resolveLocal expr name resolver = resolveName expr depth resolver
  where
   depth :: Maybe Int
@@ -125,11 +125,10 @@ resolveStmt (SomeStmt (Class name superclass methods)) =
             ( \resolver -> resolver{scopes = Map.insert "super" True (head $ scopes resolver) : tail (scopes resolver)}
             )
               . beginScope
-              . resolveExpr (Variable className)
+              . resolveExpr (SomeExpr $ Variable className)
               . if lexeme name == lexeme className
                 then addError className "A class can't inherit from itself."
                 else id
-          Just _ -> error "TODO: GADTs for Exprs"
       )
     . define name
     . declare name
@@ -173,25 +172,25 @@ resolveFunction (Function _ parameters body) functionType classType resolverType
     , currentClass = currentClass resolverType
     }
 
-resolveExpr :: Expr -> Resolver -> Resolver
-resolveExpr (AndExpr left _ right) =
+resolveExpr :: SomeExpr -> Resolver -> Resolver
+resolveExpr (SomeExpr (AndExpr left _ right)) =
   resolveExpr right
     . resolveExpr left
-resolveExpr expr@(Assign name value) = resolveLocal expr name . resolveExpr value
-resolveExpr (Binary left _ right) = resolveExpr right . resolveExpr left
-resolveExpr (Call caller _ arguments) =
+resolveExpr expr@(SomeExpr (Assign name value)) = resolveLocal expr name . resolveExpr value
+resolveExpr (SomeExpr (Binary left _ right)) = resolveExpr right . resolveExpr left
+resolveExpr (SomeExpr (Call caller _ arguments)) =
   (\resolver -> foldl (flip resolveExpr) resolver arguments)
     . resolveExpr caller
-resolveExpr (Get object _) = resolveExpr object
-resolveExpr (Grouping expr) = resolveExpr expr
-resolveExpr (OrExpr left _ right) =
+resolveExpr (SomeExpr (Get object _)) = resolveExpr object
+resolveExpr (SomeExpr (Grouping expr)) = resolveExpr expr
+resolveExpr (SomeExpr (OrExpr left _ right)) =
   resolveExpr right
     . resolveExpr left
-resolveExpr (Primary _) = id
-resolveExpr (Set object _ value) =
+resolveExpr (SomeExpr (Primary _)) = id
+resolveExpr (SomeExpr (Set object _ value)) =
   resolveExpr value
     . resolveExpr object
-resolveExpr expr@(Super keyword _) =
+resolveExpr expr@(SomeExpr (Super keyword _)) =
   resolveLocal expr keyword
     . checkClassType
  where
@@ -200,14 +199,14 @@ resolveExpr expr@(Super keyword _) =
       SUBCLASS -> resolver
       NO_CLASS -> addError keyword "Can't use 'super' outside of a class." resolver
       CLASS -> addError keyword "Can't use 'super' in a class with no superclass." resolver
-resolveExpr expr@(This keyword) = resolveLocal expr keyword . checkClassType
+resolveExpr expr@(SomeExpr (This keyword)) = resolveLocal expr keyword . checkClassType
  where
   checkClassType resolver =
     if currentClass resolver == NO_CLASS
       then addError keyword "Can't use 'this' outside of a class." resolver
       else resolver
-resolveExpr (Unary _ expr) = resolveExpr expr
-resolveExpr expr@(Variable variableToken) =
+resolveExpr (SomeExpr (Unary _ expr)) = resolveExpr expr
+resolveExpr expr@(SomeExpr (Variable variableToken)) =
   let errorCheck resolver = case scopes resolver of
         [] -> resolver
         scope : _ -> case scope Map.!? lexeme variableToken of

@@ -66,11 +66,10 @@ interpret (SomeStmt (Class name superclass classMethods)) = do
   superclassValue <- case superclass of
     Nothing -> return Nothing
     Just superclassExpr@(Variable superclassName) -> do
-      value <- interpretExpr superclassExpr
+      value <- interpretExpr $ SomeExpr superclassExpr
       case value of
         (SomeValue classValue@VClass{}) -> return $ Just classValue
         _ -> throwRuntimeError $ runtimeError superclassName "Superclass must be a class."
-    _ -> error "TODO: GADTs for Exprs"
   define name $ SomeValue VNil
   unless
     (isNothing superclass)
@@ -119,8 +118,8 @@ functionToValue isInitializer (Function functionName functionParameters body) = 
 execBlock :: [SomeStmt] -> InterpreterOutput ()
 execBlock = foldM_ (\_ stmt -> interpret stmt) ()
 
-interpretExpr :: Expr -> InterpreterOutput SomeValue
-interpretExpr (Call callee leftParenthesis argumentExpressions) = do
+interpretExpr :: SomeExpr -> InterpreterOutput SomeValue
+interpretExpr (SomeExpr (Call callee leftParenthesis argumentExpressions)) = do
   interpreter <- get
   value <- interpretExpr callee
   arguments <- interpretExprs argumentExpressions
@@ -153,11 +152,11 @@ interpretExpr (Call callee leftParenthesis argumentExpressions) = do
             leftParenthesis
           $ "Expected " ++ show (length parameters) ++ " arguments but got " ++ show (length argument) ++ "."
   interpretExprs exprs = reverse <$> foldM (\buildup expr -> (: buildup) <$> interpretExpr expr) [] exprs
-interpretExpr expr@(Assign name assigningExpression) = do
+interpretExpr expr@(SomeExpr (Assign name assigningExpression)) = do
   value <- interpretExpr assigningExpression
   assign expr name value
   return value
-interpretExpr (Binary left operator right) = do
+interpretExpr (SomeExpr (Binary left operator right)) = do
   leftValue <- interpretExpr left
   rightValue <- interpretExpr right
   getOutput leftValue rightValue
@@ -181,28 +180,28 @@ interpretExpr (Binary left operator right) = do
         return $ SomeValue $ VBoolean $ (booleanBinaryTable Map.! tokenType operator) leftNumber rightNumber
   booleanBinaryTable = Map.fromList [(LESS, (<)), (LESS_EQUAL, (<=)), (GREATER, (>)), (GREATER_EQUAL, (>=))]
   numericBinaryTable = Map.fromList [(STAR, (*)), (SLASH, (/)), (MINUS, (-))]
-interpretExpr (Unary operator expr) = interpretExpr expr >>= unaryOpTable Map.! tokenType operator
+interpretExpr (SomeExpr (Unary operator expr)) = interpretExpr expr >>= unaryOpTable Map.! tokenType operator
  where
   unaryOpTable =
     Map.fromList
       [ (BANG, return . SomeValue . VBoolean . not . isTruthy)
       , (MINUS, \val -> SomeValue . VNumber . (* (-1)) <$> toNumber val operator)
       ]
-interpretExpr (Grouping expr) = interpretExpr expr
-interpretExpr expr@(Variable token) = lookupVariable token expr
-interpretExpr (AndExpr left _ right) = do
+interpretExpr (SomeExpr (Grouping expr)) = interpretExpr expr
+interpretExpr expr@(SomeExpr (Variable token)) = lookupVariable token expr
+interpretExpr (SomeExpr (AndExpr left _ right)) = do
   value <- interpretExpr left
   if not $ isTruthy value
     then return value
     else interpretExpr right
-interpretExpr (OrExpr left _ right) = do
+interpretExpr (SomeExpr (OrExpr left _ right)) = do
   value <- interpretExpr left
   if isTruthy value
     then return value
     else interpretExpr right
-interpretExpr (Primary singleLiteral) = return $ fromLiteral singleLiteral
-interpretExpr (Get object name) = interpretExpr object >>= getFieldOrMethod name
-interpretExpr (Set object name value) = do
+interpretExpr (SomeExpr (Primary singleLiteral)) = return $ fromLiteral singleLiteral
+interpretExpr (SomeExpr (Get object name)) = interpretExpr object >>= getFieldOrMethod name
+interpretExpr (SomeExpr (Set object name value)) = do
   interpretedObject <- interpretExpr object
   case interpretedObject of
     SomeValue (VInstance _ _ _ iid) -> do
@@ -210,12 +209,12 @@ interpretExpr (Set object name value) = do
       setProperty iid name interpretedValue
       return interpretedValue
     _ -> throwRuntimeError $ runtimeError name "Only instances have fields."
-interpretExpr expr@(Super _ method) = do
+interpretExpr expr@(SomeExpr (Super _ method)) = do
   distance <- gets $ (Map.! expr) . locals
   superclass <- getSuper distance
   object <- getThis $ distance - 1
   SomeValue <$> findMethod method object superclass
-interpretExpr expr@(This keyword) = lookupVariable keyword expr
+interpretExpr expr@(SomeExpr (This keyword)) = lookupVariable keyword expr
 
 getInitializer :: Value 'ValueClass -> InterpreterOutput (Maybe (Value 'ValueFunction))
 getInitializer (VClass _ superclass methods) =
@@ -266,13 +265,12 @@ isTruthy _ = True
 
 data Interpreter = Interpreter
   { environmentTable :: Map.Map EnvID Environment
-  , locals :: Map.Map Expr Int
+  , locals :: Map.Map SomeExpr Int
   , currentEnvironment :: EnvID
   , nextEnvironmentId :: EnvID
   , nextInstanceId :: InstanceID
   , funcCounter :: FuncCounter
   }
-  deriving (Show)
 
 data Environment = Environment (Map.Map String SomeValue) (Maybe EnvID)
   deriving (Show)
@@ -395,7 +393,7 @@ assignThis value toDefineIn = do
       env = Environment (Map.insert "this" (SomeValue value) variables) parent
   put interpreter{environmentTable = Map.insert toDefineIn env $ environmentTable interpreter}
 
-assign :: Expr -> Token -> SomeValue -> InterpreterOutput ()
+assign :: SomeExpr -> Token -> SomeValue -> InterpreterOutput ()
 assign expr name value = do
   interpreter <- get
   case locals interpreter Map.!? expr of
@@ -424,7 +422,7 @@ assignGlobal token value = do
       put interpreter{environmentTable = Map.insert (EnvID 0) newGlobalEnv $ environmentTable interpreter}
     Nothing -> throwRuntimeError $ runtimeError token $ "Undefined variable '" ++ lexeme token ++ "'."
 
-lookupVariable :: Token -> Expr -> InterpreterOutput SomeValue
+lookupVariable :: Token -> SomeExpr -> InterpreterOutput SomeValue
 lookupVariable name expr = do
   interpreter <- get
   case locals interpreter Map.!? expr of
@@ -450,7 +448,6 @@ getAt distance name = do
           ++ ", current is "
           ++ show (currentEnvironment interpreter)
           ++ "\n\n     interp is "
-          ++ show interpreter
     Just value -> return value
 
 getSuper :: Int -> InterpreterOutput (Value 'ValueClass)

@@ -22,12 +22,12 @@ data SomeStmt where
   SomeStmt :: Stmt k -> SomeStmt
 
 data Stmt (k :: StmtKind) where
-  Expression :: Expr -> Stmt 'KExpression
-  Print :: Expr -> Stmt 'KPrint
-  Var :: Token -> Expr -> Stmt 'KVar
+  Expression :: SomeExpr -> Stmt 'KExpression
+  Print :: SomeExpr -> Stmt 'KPrint
+  Var :: Token -> SomeExpr -> Stmt 'KVar
   Block :: [SomeStmt] -> Stmt 'KBlock
-  If :: Expr -> SomeStmt -> Maybe SomeStmt -> Stmt 'KIf
-  While :: Expr -> SomeStmt -> Stmt 'KWhile
+  If :: SomeExpr -> SomeStmt -> Maybe SomeStmt -> Stmt 'KIf
+  While :: SomeExpr -> SomeStmt -> Stmt 'KWhile
   Function :: Token -> [Token] -> [SomeStmt] -> Stmt 'KFunction
-  Return :: Token -> Maybe Expr -> Stmt 'KReturn
-  Class :: Token -> Maybe Expr -> [Stmt 'KFunction] -> Stmt 'KClass
+  Return :: Token -> Maybe SomeExpr -> Stmt 'KReturn
+  Class :: Token -> Maybe (Expr 'ExprVariable) -> [Stmt 'KFunction] -> Stmt 'KClass

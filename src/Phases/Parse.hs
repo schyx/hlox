@@ -1,4 +1,5 @@
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE TupleSections #-}
 
 module Phases.Parse (parse, TreeResult, expressionWrapper) where
@@ -96,7 +97,7 @@ addNonBlockingParseError :: String -> MaybeT Planter ()
 addNonBlockingParseError errMessage = MaybeT $ makePlanter $ \(inErrs, tokens) ->
   Just ((errMessage : inErrs, tokens), Just ())
 
-expressionWrapper :: [Token] -> Either [String] Expr
+expressionWrapper :: [Token] -> Either [String] SomeExpr
 expressionWrapper =
   (\((errs, _), expr) -> if null errs then Right expr else Left errs)
     . fromMaybe undefined
@@ -168,7 +169,7 @@ variableDeclaration = do
  where
   assignVal variableName =
     Var variableName <$> (match (== EQUAL) *> expression <* consume SEMICOLON "Expect ';' after variable declaration.")
-  noVal variableName = Var variableName <$> (match (== SEMICOLON) $> Primary Nil)
+  noVal variableName = Var variableName <$> (match (== SEMICOLON) $> SomeExpr (Primary Nil))
   unexpectedToken =
     (parseError <$> match (const True) <*> pure "Expect ';' after variable declaration.")
       >>= addParseError
@@ -206,7 +207,7 @@ forStatement = do
           Nothing -> body
           Just increment -> SomeStmt . Block $ [body, SomeStmt $ Expression increment]
         newCondition = case maybeCondition of
-          Nothing -> Primary $ Boolean True
+          Nothing -> SomeExpr $ Primary $ Boolean True
           Just condition -> condition
         newStmt =
           let while = While newCondition newBody
@@ -256,45 +257,48 @@ expressionStatement =
   Expression
     <$> (check (/= EOF) *> expression <* consume SEMICOLON "Expect ';' after expression.")
 
-expression :: MaybeT Planter Expr
+expression :: MaybeT Planter SomeExpr
 expression = assignment
 
-assignment :: MaybeT Planter Expr
+assignment :: MaybeT Planter SomeExpr
 assignment = do
   expr <- orExpr
   ( do
       equalSign <- match (== EQUAL)
       value <- assignment
       case expr of
-        Variable token -> return $ Assign token value
-        Get object name -> return $ Set object name value
-        _ -> This equalSign <$ addNonBlockingParseError (parseError equalSign "Invalid assignment target.")
+        (SomeExpr (Variable token)) -> return $ SomeExpr $ Assign token value
+        (SomeExpr (Get object name)) -> return $ SomeExpr $ Set object name value
+        _ -> SomeExpr (This equalSign) <$ addNonBlockingParseError (parseError equalSign "Invalid assignment target.")
     )
     <||> return expr
 
-orExpr :: MaybeT Planter Expr
-orExpr = chainedOperator andExpr [OR] OrExpr
+toSomeExpr :: (SomeExpr -> Token -> SomeExpr -> Expr e) -> (SomeExpr -> Token -> SomeExpr -> SomeExpr)
+toSomeExpr f left op right = SomeExpr $ f left op right
 
-andExpr :: MaybeT Planter Expr
-andExpr = chainedOperator equality [AND] AndExpr
+orExpr :: MaybeT Planter SomeExpr
+orExpr = chainedOperator andExpr [OR] (toSomeExpr OrExpr)
 
-equality :: MaybeT Planter Expr
-equality = chainedOperator comparison [EQUAL_EQUAL, BANG_EQUAL] Binary
+andExpr :: MaybeT Planter SomeExpr
+andExpr = chainedOperator equality [AND] (toSomeExpr AndExpr)
 
-comparison :: MaybeT Planter Expr
-comparison = chainedOperator term [LESS, LESS_EQUAL, GREATER, GREATER_EQUAL] Binary
+equality :: MaybeT Planter SomeExpr
+equality = chainedOperator comparison [EQUAL_EQUAL, BANG_EQUAL] (toSomeExpr Binary)
 
-term :: MaybeT Planter Expr
-term = chainedOperator factor [PLUS, MINUS] Binary
+comparison :: MaybeT Planter SomeExpr
+comparison = chainedOperator term [LESS, LESS_EQUAL, GREATER, GREATER_EQUAL] (toSomeExpr Binary)
 
-factor :: MaybeT Planter Expr
-factor = chainedOperator unary [SLASH, STAR] Binary
+term :: MaybeT Planter SomeExpr
+term = chainedOperator factor [PLUS, MINUS] (toSomeExpr Binary)
+
+factor :: MaybeT Planter SomeExpr
+factor = chainedOperator unary [SLASH, STAR] (toSomeExpr Binary)
 
 chainedOperator ::
-  MaybeT Planter Expr ->
+  MaybeT Planter SomeExpr ->
   [TokenType] ->
-  (Expr -> Token -> Expr -> Expr) ->
-  MaybeT Planter Expr
+  (SomeExpr -> Token -> SomeExpr -> SomeExpr) ->
+  MaybeT Planter SomeExpr
 chainedOperator innerPlanter operatorTypes exprConstructor = do
   left <- innerPlanter
   ( do
@@ -312,19 +316,19 @@ chainedOperator innerPlanter operatorTypes exprConstructor = do
       )
       <||> return expr
 
-unary :: MaybeT Planter Expr
-unary = (Unary <$> match (`elem` [MINUS, BANG]) <*> unary) <||> call
+unary :: MaybeT Planter SomeExpr
+unary = (SomeExpr <$> (Unary <$> match (`elem` [MINUS, BANG]) <*> unary)) <||> call
 
-call :: MaybeT Planter Expr
+call :: MaybeT Planter SomeExpr
 call = callOrGet <||> primary
  where
   callOrGet = do
     callee <- primary
     callOrGetLoop callee
   callOrGetLoop callee =
-    ((Call callee <$> match (== LEFT_PAREN) <*> finishCall) >>= callOrGetLoop)
+    ((Call callee <$> match (== LEFT_PAREN) <*> finishCall) >>= callOrGetLoop . SomeExpr)
       <||> ( (match (== DOT) *> consume IDENTIFIER "Expect property name after '.'.")
-              >>= callOrGetLoop . Get callee
+              >>= callOrGetLoop . SomeExpr . Get callee
            )
       <||> return callee
   finishCall =
@@ -340,12 +344,12 @@ call = callOrGet <||> primary
     (match (== COMMA) >> argsHelper newBuildup)
       <||> (consume RIGHT_PAREN "Expect ')' after arguments." >> return (reverse newBuildup))
 
-primary :: MaybeT Planter Expr
+primary :: MaybeT Planter SomeExpr
 primary = createThis <||> createLiteral <||> createGrouping <||> createSuper <||> createVariable <||> noPrimary
  where
-  createThis = This <$> match (== THIS)
-  createLiteral = Primary . fromMaybe undefined . literal <$> match (`elem` [FALSE, TRUE, NUMBER, STRING, NIL])
-  createGrouping = Grouping <$> (match (== LEFT_PAREN) *> expression <* consume RIGHT_PAREN "Expect ')' after expression.")
-  createSuper = Super <$> match (== SUPER) <*> (consume DOT "Expect '.' after 'super'." *> consume IDENTIFIER "Expect superclass method name.")
-  createVariable = Variable <$> match (== IDENTIFIER)
+  createThis = SomeExpr . This <$> match (== THIS)
+  createLiteral = SomeExpr . Primary . fromMaybe undefined . literal <$> match (`elem` [FALSE, TRUE, NUMBER, STRING, NIL])
+  createGrouping = SomeExpr . Grouping <$> (match (== LEFT_PAREN) *> expression <* consume RIGHT_PAREN "Expect ')' after expression.")
+  createSuper = SomeExpr <$> (Super <$> match (== SUPER) <*> (consume DOT "Expect '.' after 'super'." *> consume IDENTIFIER "Expect superclass method name."))
+  createVariable = SomeExpr . Variable <$> match (== IDENTIFIER)
   noPrimary = parseError <$> match (const True) <*> pure "Expect expression." >>= addParseError
