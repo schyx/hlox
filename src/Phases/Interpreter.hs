@@ -387,9 +387,7 @@ assignTok token value = do
 assignThis :: (MonadState Interpreter m) => Value 'ValueInstance -> EnvID -> m ()
 assignThis value toDefineIn = do
   interpreter <- get
-  let Environment variables parent = case environmentTable interpreter Map.!? toDefineIn of
-        Nothing -> error "here"
-        Just e -> e
+  let Environment variables parent = environmentTable interpreter Map.! toDefineIn
       env = Environment (Map.insert "this" (SomeValue value) variables) parent
   put interpreter{environmentTable = Map.insert toDefineIn env $ environmentTable interpreter}
 
@@ -438,17 +436,7 @@ getAt distance name = do
   interpreter <- get
   ancestor <- getAncestor distance $ currentEnvironment interpreter
   let Environment envTable _ = environmentTable interpreter Map.! ancestor
-  case envTable Map.!? name of
-    Nothing ->
-      error $
-        "getting "
-          ++ name
-          ++ " from envTable, distance is "
-          ++ show distance
-          ++ ", current is "
-          ++ show (currentEnvironment interpreter)
-          ++ "\n\n     interp is "
-    Just value -> return value
+  return $ envTable Map.! name
 
 getSuper :: Int -> InterpreterOutput (Value 'ValueClass)
 getSuper distance = do
