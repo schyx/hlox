@@ -8,6 +8,7 @@ data Error
   | ParseError Token String
   | ResolveError Token String
   | InterpretError Token String
+  | UnknownError String
 
 showError :: Error -> String
 showError (ScanError scannerLine location message) = report scannerLine location message
@@ -18,6 +19,7 @@ showError (ResolveError token message)
   | tokenType token == EOF = report (line token) " at end" message
   | otherwise = report (line token) (" at '" ++ lexeme token ++ "'") message
 showError (InterpretError token message) = printf "%s\n[line %d]" message $ line token
+showError (UnknownError message) = "[UNKNOWN ERROR]: " ++ message
 
 report :: Int -> String -> String -> String
 report = printf "[line %d] Error%s: %s"
