@@ -34,7 +34,6 @@ library
       Phases.Scanner
       Phases.Stmt
       Tokens
-      Utils
   other-modules:
       Paths_hlox
   autogen-modules:
