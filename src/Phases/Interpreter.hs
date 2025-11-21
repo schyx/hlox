@@ -12,12 +12,12 @@ module Phases.Interpreter (
 ) where
 
 import Control.Monad (foldM, foldM_, unless, void, when)
-import Control.Monad.Except (ExceptT (..), runExceptT, throwError)
+import Control.Monad.Except (ExceptT (..), MonadError, runExceptT, throwError)
 import Control.Monad.IO.Class (liftIO)
-import Control.Monad.State (MonadState (get, put), StateT, gets, runStateT)
+import Control.Monad.State (MonadState (get, put), StateT, runStateT)
 import Control.Monad.Trans.Class (lift)
-import qualified Data.Map as Map
-import Data.Maybe (fromMaybe, isNothing)
+import qualified Data.Map as Map hiding ((!))
+import Data.Maybe (isNothing)
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import Error (Error (..), showError)
 import Numeric (showFFloat)
@@ -37,8 +37,7 @@ runInterp startInterpreter stmt = do
     Right (_, interpreter) -> return $ Right interpreter
  where
   runStmt :: InterpreterOutput ()
-  runStmt = do
-    interpret stmt
+  runStmt = interpret stmt
 
 type InterpreterOutput a = ExceptT SomeValue (StateT Interpreter (ExceptT Error IO)) a
 
@@ -96,7 +95,7 @@ functionToValue isInitializer (Function functionName functionParameters body) = 
       functionF args = do
         restoreRunningEnv definingInterpreter
         createChildEnv
-        foldM_ (\_ (token, value) -> define token value) () (zip (map lexeme functionParameters) args)
+        foldM_ (\_ (token, value) -> defineInner token value) () (zip (map lexeme functionParameters) args)
         run <- runExceptT $ execBlock body
         case run of
           Left value -> return value
@@ -166,21 +165,29 @@ interpretExpr (SomeExpr (Binary left operator right)) = do
                   else leftValue /= rightValue
               )
     | tokenType operator == PLUS = plusOperator leftValue rightValue operator
-    | Map.member (tokenType operator) numericBinaryTable = do
+    | tokenType operator `elem` [STAR, SLASH, MINUS] = do
         (leftNumber, rightNumber) <- toNumberPair leftValue rightValue operator
-        return $ SomeValue $ VNumber $ (numericBinaryTable Map.! tokenType operator) leftNumber rightNumber
+        function <- numericBinaryOperator $ tokenType operator
+        return $ SomeValue $ VNumber $ function leftNumber rightNumber
     | otherwise = do
         (leftNumber, rightNumber) <- toNumberPair leftValue rightValue operator
-        return $ SomeValue $ VBoolean $ (booleanBinaryTable Map.! tokenType operator) leftNumber rightNumber
-  booleanBinaryTable = Map.fromList [(LESS, (<)), (LESS_EQUAL, (<=)), (GREATER, (>)), (GREATER_EQUAL, (>=))]
-  numericBinaryTable = Map.fromList [(STAR, (*)), (SLASH, (/)), (MINUS, (-))]
-interpretExpr (SomeExpr (Unary operator expr)) = interpretExpr expr >>= unaryOpTable Map.! tokenType operator
- where
-  unaryOpTable =
-    Map.fromList
-      [ (BANG, return . SomeValue . VBoolean . not . isTruthy)
-      , (MINUS, \val -> SomeValue . VNumber . (* (-1)) <$> toNumber val operator)
-      ]
+        function <- booleanBinaryOperator $ tokenType operator
+        return $ SomeValue $ VBoolean $ function leftNumber rightNumber
+  booleanBinaryOperator LESS = return (<)
+  booleanBinaryOperator LESS_EQUAL = return (<=)
+  booleanBinaryOperator GREATER = return (>)
+  booleanBinaryOperator GREATER_EQUAL = return (>=)
+  booleanBinaryOperator _ = throwRuntimeError $ UnknownError "Got unknown token type for booleanBinaryOperator"
+  numericBinaryOperator STAR = return (*)
+  numericBinaryOperator SLASH = return (/)
+  numericBinaryOperator MINUS = return (-)
+  numericBinaryOperator _ = throwRuntimeError $ UnknownError "Got unknown token type for numericBinaryOperator"
+interpretExpr (SomeExpr (Unary operator expression)) = do
+  value <- interpretExpr expression
+  case tokenType operator of
+    BANG -> return . SomeValue . VBoolean . not . isTruthy $ value
+    MINUS -> SomeValue . VNumber . (* (-1)) <$> toNumber value operator
+    _ -> throwRuntimeError $ UnknownError "Got unknown token type for Unary operator"
 interpretExpr (SomeExpr (Grouping expr)) = interpretExpr expr
 interpretExpr expr@(SomeExpr (Variable token)) = lookupVariable token expr
 interpretExpr (SomeExpr (AndExpr left _ right)) = do
@@ -204,7 +211,10 @@ interpretExpr (SomeExpr (Set object name value)) = do
       return interpretedValue
     _ -> throwRuntimeError $ InterpretError name "Only instances have fields."
 interpretExpr expr@(SomeExpr (Super _ method)) = do
-  distance <- gets $ (Map.! expr) . locals
+  interpreter <- get
+  distance <- case locals interpreter Map.!? expr of
+    Nothing -> throwRuntimeError $ UnknownError "No distance for super in locals"
+    Just d -> return d
   superclass <- getSuper distance
   object <- getThis $ distance - 1
   SomeValue <$> findMethod method object superclass
@@ -285,6 +295,13 @@ newtype FunctionID = FunctionID Int
 
 newtype FuncCounter = FuncCounter {getFuncCounter :: Map.Map ([Token], Token, String, Bool) FunctionID}
 
+getCurrentEnvironment :: InterpreterOutput Environment
+getCurrentEnvironment = do
+  interpreter <- get
+  case environmentTable interpreter Map.!? currentEnvironment interpreter of
+    Nothing -> throwRuntimeError $ UnknownError "Interpreter doesn't have current environment"
+    Just env -> return env
+
 addFunction ::
   [Token] ->
   Token ->
@@ -324,7 +341,7 @@ defaultInterpreter localVariables =
       clockFunc _ = do
         time <- liftIO getPOSIXTime
         return $ SomeValue $ VNumber (realToFrac time :: Double)
-      clock = VFunction [] clockToken "<native fn>" False undefined clockFunc (FunctionID 0)
+      clock = VFunction [] clockToken "<native fn>" False (EnvID 0) clockFunc (FunctionID 0)
       globalEnv = Environment (Map.fromList [("clock", SomeValue clock)]) Nothing
       table = Map.fromList [(EnvID 0, globalEnv)]
    in Interpreter table (resolverMap localVariables) (EnvID 0) (EnvID 0) (InstanceID 0) (FuncCounter Map.empty)
@@ -340,23 +357,35 @@ createChildEnv = do
 changeToParent :: InterpreterOutput ()
 changeToParent = do
   interpreter <- get
-  let Environment _ parent = environmentTable interpreter Map.! currentEnvironment interpreter
+  Environment _ parent <- getCurrentEnvironment
   case parent of
     Just parentEnvironmentId -> put interpreter{currentEnvironment = parentEnvironmentId}
-    Nothing -> error "can't change to parent when no parent"
+    Nothing -> throwRuntimeError $ UnknownError "Can't change to parent when there is no parent."
 
-define :: (MonadState Interpreter m) => String -> SomeValue -> m ()
+defineInner :: (MonadState Interpreter m, MonadError Error m) => String -> SomeValue -> m ()
+defineInner name value = do
+  interpreter <- get
+  (envTable, parent) <- case environmentTable interpreter Map.!? currentEnvironment interpreter of
+    Nothing -> throwError $ UnknownError "Interpreter doesn't have current environment"
+    Just (Environment table parent) -> return (table, parent)
+  let definedTable = Map.insert name value envTable
+      definedEnvironment = Environment definedTable parent
+  put interpreter{environmentTable = Map.insert (currentEnvironment interpreter) definedEnvironment (environmentTable interpreter)}
+
+define :: String -> SomeValue -> InterpreterOutput ()
 define name value = do
   interpreter <- get
-  let Environment envTable parent = environmentTable interpreter Map.! currentEnvironment interpreter
-      definedTable = Map.insert name value envTable
+  (envTable, parent) <- case environmentTable interpreter Map.!? currentEnvironment interpreter of
+    Nothing -> throwRuntimeError $ UnknownError "Interpreter doesn't have current environment"
+    Just (Environment table parent) -> return (table, parent)
+  let definedTable = Map.insert name value envTable
       definedEnvironment = Environment definedTable parent
   put interpreter{environmentTable = Map.insert (currentEnvironment interpreter) definedEnvironment (environmentTable interpreter)}
 
 assignTok :: Token -> SomeValue -> InterpreterOutput ()
 assignTok token value = do
   interpreter <- get
-  let Environment envTable parent = environmentTable interpreter Map.! currentEnvironment interpreter
+  Environment envTable parent <- getCurrentEnvironment
   if Map.member (lexeme token) envTable
     then
       let assignedTable = Map.insert (lexeme token) value envTable
@@ -376,11 +405,13 @@ assignTok token value = do
         put interpreter{currentEnvironment = currentEnvironment interpreter}
       Nothing -> throwRuntimeError $ InterpretError token $ "Undefined variable '" ++ lexeme token ++ "'."
 
-assignThis :: (MonadState Interpreter m) => Value 'ValueInstance -> EnvID -> m ()
+assignThis :: Value 'ValueInstance -> EnvID -> InterpreterOutput ()
 assignThis value toDefineIn = do
   interpreter <- get
-  let Environment variables parent = environmentTable interpreter Map.! toDefineIn
-      env = Environment (Map.insert "this" (SomeValue value) variables) parent
+  Environment variables parent <- case environmentTable interpreter Map.!? toDefineIn of
+    Nothing -> throwRuntimeError $ UnknownError "Environment to define \"this\" in doesn't exist"
+    Just toDefineInEnv -> return toDefineInEnv
+  let env = Environment (Map.insert "this" (SomeValue value) variables) parent
   put interpreter{environmentTable = Map.insert toDefineIn env $ environmentTable interpreter}
 
 assign :: SomeExpr -> Token -> SomeValue -> InterpreterOutput ()
@@ -394,8 +425,10 @@ assignAt :: Int -> Token -> SomeValue -> InterpreterOutput ()
 assignAt distance name value = do
   interpreter <- get
   ancestor <- getAncestor distance $ currentEnvironment interpreter
-  let Environment envTable parent = fromMaybe (error "in assignAt") (environmentTable interpreter Map.!? ancestor)
-      newTable =
+  Environment envTable parent <- case environmentTable interpreter Map.!? ancestor of
+    Nothing -> throwRuntimeError $ UnknownError "Ancestor doesn't exist in interpreter in assignAt"
+    Just ancestorEnv -> return ancestorEnv
+  let newTable =
         Map.insert
           ancestor
           (Environment (Map.insert (lexeme name) value envTable) parent)
@@ -405,51 +438,61 @@ assignAt distance name value = do
 assignGlobal :: Token -> SomeValue -> InterpreterOutput ()
 assignGlobal token value = do
   interpreter <- get
-  let Environment globalTable parentEnv = environmentTable interpreter Map.! EnvID 0
-      newGlobalEnv = Environment (Map.insert (lexeme token) value globalTable) parentEnv
+  Environment globalTable parentEnv <- case environmentTable interpreter Map.!? EnvID 0 of
+    Nothing -> throwRuntimeError $ UnknownError "Global environment doesn't exist"
+    Just globalEnv -> return globalEnv
+  let newGlobalEnv = Environment (Map.insert (lexeme token) value globalTable) parentEnv
   case globalTable Map.!? lexeme token of
-    Just _ ->
-      put interpreter{environmentTable = Map.insert (EnvID 0) newGlobalEnv $ environmentTable interpreter}
+    Just _ -> put interpreter{environmentTable = Map.insert (EnvID 0) newGlobalEnv $ environmentTable interpreter}
     Nothing -> throwRuntimeError $ InterpretError token $ "Undefined variable '" ++ lexeme token ++ "'."
 
 lookupVariable :: Token -> SomeExpr -> InterpreterOutput SomeValue
 lookupVariable name expr = do
   interpreter <- get
   case locals interpreter Map.!? expr of
-    Nothing ->
-      let Environment envTable _ = environmentTable interpreter Map.! EnvID 0
-       in case envTable Map.!? lexeme name of
-            Nothing -> throwRuntimeError $ InterpretError name $ "Undefined variable '" ++ lexeme name ++ "'."
-            Just value -> return value
+    Nothing -> do
+      Environment envTable _ <- case environmentTable interpreter Map.!? EnvID 0 of
+        Nothing -> throwRuntimeError $ UnknownError "Global environment doesn't exist"
+        Just globalEnv -> return globalEnv
+      case envTable Map.!? lexeme name of
+        Nothing -> throwRuntimeError $ InterpretError name $ "Undefined variable '" ++ lexeme name ++ "'."
+        Just value -> return value
     Just distance -> getAt distance $ lexeme name
 
 getAt :: Int -> String -> InterpreterOutput SomeValue
 getAt distance name = do
   interpreter <- get
   ancestor <- getAncestor distance $ currentEnvironment interpreter
-  let Environment envTable _ = environmentTable interpreter Map.! ancestor
-  return $ envTable Map.! name
+  Environment envTable _ <- case environmentTable interpreter Map.!? ancestor of
+    Nothing -> throwRuntimeError $ UnknownError "Ancestor environment doesn't exist in getAt"
+    Just ancestorEnv -> return ancestorEnv
+  case envTable Map.!? name of
+    Just value -> return value
+    Nothing -> throwRuntimeError $ UnknownError "Name doesn't exist in ancestor environment in getAt"
 
 getSuper :: Int -> InterpreterOutput (Value 'ValueClass)
 getSuper distance = do
   superValue <- getAt distance "super"
   case superValue of
     (SomeValue super@VClass{}) -> return super
-    _ -> error "No super value in this environment"
+    _ -> throwRuntimeError $ UnknownError "No super value in this environment"
 
 getThis :: Int -> InterpreterOutput (Value 'ValueInstance)
 getThis distance = do
   thisValue <- getAt distance "this"
   case thisValue of
     (SomeValue this@VInstance{}) -> return this
-    _ -> error "No this value in this environment"
+    _ -> throwRuntimeError $ UnknownError "No this value in this environment"
 
 getAncestor :: Int -> EnvID -> InterpreterOutput EnvID
 getAncestor 0 childId = return childId
 getAncestor distance childId = do
   interpreter <- get
-  let Environment _ parent = environmentTable interpreter Map.! childId
-      parentId = fromMaybe undefined parent
+  parentId <- case environmentTable interpreter Map.!? childId of
+    Nothing -> throwRuntimeError $ UnknownError "Ancestor doesn't exist in map"
+    Just (Environment _ parent) -> case parent of
+      Nothing -> throwRuntimeError $ UnknownError "Parent doesn't exist for ancestor"
+      Just pid -> return pid
   getAncestor (distance - 1) parentId
 
 restoreRunningEnv :: (MonadState Interpreter m) => Interpreter -> m ()
