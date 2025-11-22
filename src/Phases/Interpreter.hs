@@ -5,6 +5,7 @@
 
 module Phases.Interpreter (
   runInterp,
+  mergeLocals,
   interpret,
   interpretExpr,
   defaultInterpreter,
@@ -38,6 +39,10 @@ runInterp startInterpreter stmt = do
  where
   runStmt :: InterpreterOutput ()
   runStmt = interpret stmt
+
+mergeLocals :: Locals -> Interpreter -> Interpreter
+mergeLocals newLocals oldInterpreter =
+  oldInterpreter{locals = Map.union (locals oldInterpreter) (resolverMap newLocals)}
 
 type InterpreterOutput a = ExceptT SomeValue (StateT Interpreter (ExceptT Error IO)) a
 

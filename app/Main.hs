@@ -23,19 +23,20 @@ checkArgs _ = do
   putStrLn "Usage: hlox [script]"
   exitWith $ ExitFailure 64
 
+-- TODO: support interpreting just exprs
 startShell :: IO ()
-startShell = go $ defaultInterpreter $ Locals Map.empty
+startShell = go 0 $ defaultInterpreter $ Locals Map.empty
  where
-  go :: Interpreter -> IO ()
-  go interpreter = do
+  go :: Int -> Interpreter -> IO ()
+  go promptNumber interpreter = do
     putStr "> "
     hFlush stdout
     input <- getLine
-    modifiedInterpreter <- runInput input interpreter
-    go modifiedInterpreter
-  runInput :: String -> Interpreter -> IO Interpreter
-  runInput input interpreter = do
-    let (scanErrs, tokens) = scanTokens input
+    modifiedInterpreter <- runInput input promptNumber interpreter
+    go (promptNumber + 1) modifiedInterpreter
+  runInput :: String -> Int -> Interpreter -> IO Interpreter
+  runInput input promptNumber interpreter = do
+    let (scanErrs, tokens) = scanAtLine input promptNumber
     if null scanErrs
       then case parse tokens of
         Right stmts -> do
@@ -43,10 +44,11 @@ startShell = go $ defaultInterpreter $ Locals Map.empty
             Left resolveErrs -> do
               toStderr resolveErrs
               return interpreter
-            Right _ -> do -- TODO: add in locals fix
-              statementOutput <- runStatements interpreter stmts
+            Right newLocals -> do
+              let newInterpreter = mergeLocals newLocals interpreter
+              statementOutput <- runStatements newInterpreter stmts
               case statementOutput of
-                Left interpreterError -> toStderr [interpreterError] >> return interpreter
+                Left _ -> return interpreter
                 Right interpreter' -> return interpreter'
         Left parseErrs -> do
           toStderr parseErrs

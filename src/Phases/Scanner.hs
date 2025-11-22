@@ -1,6 +1,6 @@
 {-# LANGUAGE LambdaCase #-}
 
-module Phases.Scanner (scanTokens, ScanResult) where
+module Phases.Scanner (scanTokens, scanAtLine, ScanResult) where
 
 import Control.Applicative (Alternative (many, (<|>)))
 import Data.Char (isAlpha, isAlphaNum, isDigit)
@@ -58,6 +58,11 @@ scanTokens contents =
     )
   addResult (errors, tokens) eofLine ((Left err) : others) = addResult (err : errors, tokens) eofLine others
   addResult (errors, tokens) eofLine ((Right token) : others) = addResult (errors, token : tokens) eofLine others
+
+scanAtLine :: String -> Int -> ScanResult
+scanAtLine input lineNumber =
+  let (scanErrs, scanToks) = scanTokens input
+   in (scanErrs, map (\tok -> tok{line = line tok + lineNumber}) scanToks)
 
 scanner :: LoxScanner (Either Error Token)
 scanner =
