@@ -1,6 +1,5 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE GADTs #-}
-{-# LANGUAGE TupleSections #-}
 
 module Phases.Parse (parse, TreeResult, expressionWrapper) where
 
@@ -33,9 +32,10 @@ parse input =
   let start = ([], input)
       output =
         ( \maybeValue ->
-            let value = fromMaybe undefined maybeValue
-                errs = fst . fst $ value
-                stmts = fromMaybe undefined $ sequenceA $ snd value
+            let value = fromMaybe (([UnknownError "Got Nothing after running planter; shouldn't be possible?"], []), []) maybeValue
+                (stmts, errs) = case sequenceA $ snd value of
+                  Just statements -> (statements, fst . fst $ value)
+                  Nothing -> ([], fst . fst $ value)
              in if null errs
                   then Right stmts
                   else Left $ reverse errs
@@ -46,13 +46,19 @@ parse input =
 planter :: Planter (Maybe SomeStmt)
 planter = runMaybeT declaration
 
-syncTokens :: [Token] -> [Token]
+syncTokens :: [Token] -> ([Error], [Token])
 syncTokens (token : tokens)
-  | tokenType token == EOF = token : tokens
-  | tokenType token == SEMICOLON = tokens
-  | tokenType token `elem` [CLASS, FUN, VAR, FOR, IF, WHILE, PRINT, RETURN] = token : tokens
+  | tokenType token == EOF = ([], token : tokens)
+  | tokenType token == SEMICOLON = ([], tokens)
+  | tokenType token `elem` [CLASS, FUN, VAR, FOR, IF, WHILE, PRINT, RETURN] = ([], token : tokens)
   | otherwise = syncTokens tokens
-syncTokens [] = error "Should not get empty in sync"
+syncTokens [] =
+  (
+    [ UnknownError
+        "Got empty in syncTokens; shouldn't be possible because we should always have EOF at end, and never get rid of EOF"
+    ]
+  , []
+  )
 
 -- | Allows for choice on the Planter level rather than the MaybeT level
 (<||>) :: MaybeT Planter a -> MaybeT Planter a -> MaybeT Planter a
@@ -87,22 +93,29 @@ consume desiredType message = MaybeT $ makePlanter $ \(inErrs, inTokens) ->
    in Just $
         if tokenType firstToken == desiredType
           then ((inErrs, restTokens), Just firstToken)
-          else ((errsIfFail, syncTokens inTokens), Nothing)
+          else case syncTokens inTokens of
+            ([], tokens) -> ((errsIfFail, tokens), Nothing)
+            (errs, tokens) -> ((errs ++ errsIfFail, tokens), Nothing)
 
 addParseError :: Error -> MaybeT Planter a
 addParseError errMessage = MaybeT $ makePlanter $ \(inErrs, tokens) ->
-  Just ((errMessage : inErrs, syncTokens tokens), Nothing)
+  case syncTokens tokens of
+    ([], syncedTokens) -> Just ((errMessage : inErrs, syncedTokens), Nothing)
+    (syncErrs, syncedTokens) -> Just ((syncErrs ++ [errMessage] ++ inErrs, syncedTokens), Nothing)
 
 addNonBlockingParseError :: Error -> MaybeT Planter ()
 addNonBlockingParseError errMessage = MaybeT $ makePlanter $ \(inErrs, tokens) ->
   Just ((errMessage : inErrs, tokens), Just ())
 
 expressionWrapper :: [Token] -> Either [Error] SomeExpr
-expressionWrapper =
-  (\((errs, _), expr) -> if null errs then Right expr else Left errs)
-    . fromMaybe undefined
-    . runPlanter (fromMaybe undefined <$> runMaybeT expression)
-    . ([],)
+expressionWrapper tokens =
+  let planterStart = ([], tokens)
+      ((outputErrs, _), outputExpr) = case runPlanter (runMaybeT expression) planterStart of
+        Nothing -> (([UnknownError "expression should not return Nothing"], []), SomeExpr (Primary Nil))
+        Just ((errs, toks), maybeExpr) -> case maybeExpr of
+          Nothing -> ((UnknownError "Running planter should not lead to Nothing" : errs, toks), SomeExpr (Primary Nil))
+          Just expr -> ((errs, toks), expr)
+   in if null outputErrs then Right outputExpr else Left outputErrs
 
 declaration :: MaybeT Planter SomeStmt
 declaration =
@@ -120,11 +133,15 @@ classDeclaration =
  where
   parseMethods = MaybeT $ Parser $ \(inErrs, inToks) ->
     let output = runPlanter (runMaybeT $ many $ createCallable "method") (inErrs, inToks)
-        ((outErrs, outToks), justMethods) = fromMaybe undefined output
-        methods = fromMaybe undefined justMethods
+        ((outErrs, outToks), justMethods) = fromMaybe ((UnknownError "Cannot get nothing from many call" : outErrs, outToks), justMethods) output
+        (finalErrs, methods) = case justMethods of
+          Nothing -> (UnknownError "Got nothing from many call; shouldn't be possible?" : outErrs, [])
+          Just inJustMethods -> (outErrs, inJustMethods)
      in if length outErrs == length inErrs
-          then Just ((outErrs, outToks), Just methods)
-          else Just ((outErrs, syncTokens outToks), Nothing)
+          then Just ((finalErrs, outToks), Just methods)
+          else case syncTokens outToks of
+            ([], tokens) -> Just ((finalErrs, tokens), Nothing)
+            (syncErrs, tokens) -> Just ((syncErrs ++ finalErrs, tokens), Nothing)
 
 functionDeclaration :: MaybeT Planter (Stmt KFunction)
 functionDeclaration = match (== FUN) *> createCallable "function"
@@ -348,7 +365,11 @@ primary :: MaybeT Planter SomeExpr
 primary = createThis <||> createLiteral <||> createGrouping <||> createSuper <||> createVariable <||> noPrimary
  where
   createThis = SomeExpr . This <$> match (== THIS)
-  createLiteral = SomeExpr . Primary . fromMaybe undefined . literal <$> match (`elem` [FALSE, TRUE, NUMBER, STRING, NIL])
+  createLiteral = do
+    tokenLiteral <- literal <$> match (`elem` [FALSE, TRUE, NUMBER, STRING, NIL])
+    case tokenLiteral of
+      Nothing -> addParseError $ UnknownError "Literal had not literal??"
+      Just lit -> return $ SomeExpr $ Primary lit
   createGrouping = SomeExpr . Grouping <$> (match (== LEFT_PAREN) *> expression <* consume RIGHT_PAREN "Expect ')' after expression.")
   createSuper = SomeExpr <$> (Super <$> match (== SUPER) <*> (consume DOT "Expect '.' after 'super'." *> consume IDENTIFIER "Expect superclass method name."))
   createVariable = SomeExpr . Variable <$> match (== IDENTIFIER)
