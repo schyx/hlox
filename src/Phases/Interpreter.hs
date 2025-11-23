@@ -5,6 +5,7 @@
 
 module Phases.Interpreter (
   runInterp,
+  runExpr,
   mergeLocals,
   interpret,
   interpretExpr,
@@ -43,6 +44,17 @@ runInterp startInterpreter stmt = do
 mergeLocals :: Locals -> Interpreter -> Interpreter
 mergeLocals newLocals oldInterpreter =
   oldInterpreter{locals = Map.union (locals oldInterpreter) (resolverMap newLocals)}
+
+runExpr :: Interpreter -> SomeExpr -> IO (Either Error (SomeValue, Interpreter))
+runExpr startInterpreter expr = do
+  intermediate <- runExceptT $ runStateT (runExceptT $ interpretExpr expr) startInterpreter
+  case intermediate of
+    Left err -> do
+      hPutStrLn stderr $ showError err
+      return $ Left err
+    Right (outputValue, endInterpreter) -> case outputValue of
+      Right expressionValue -> return $ Right (expressionValue, endInterpreter)
+      Left _ -> return $ Left $ UnknownError "Got return value for expression"
 
 type InterpreterOutput a = ExceptT SomeValue (StateT Interpreter (ExceptT Error IO)) a
 

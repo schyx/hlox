@@ -110,12 +110,15 @@ addNonBlockingParseError errMessage = MaybeT $ makePlanter $ \(inErrs, tokens) -
 expressionWrapper :: [Token] -> Either [Error] SomeExpr
 expressionWrapper tokens =
   let planterStart = ([], tokens)
-      ((outputErrs, _), outputExpr) = case runPlanter (runMaybeT expression) planterStart of
+      ((outputErrs, outputToks), outputExpr) = case runPlanter (runMaybeT expression) planterStart of
         Nothing -> (([UnknownError "expression should not return Nothing"], []), SomeExpr (Primary Nil))
         Just ((errs, toks), maybeExpr) -> case maybeExpr of
           Nothing -> ((UnknownError "Running planter should not lead to Nothing" : errs, toks), SomeExpr (Primary Nil))
           Just expr -> ((errs, toks), expr)
-   in if null outputErrs then Right outputExpr else Left outputErrs
+   in case (outputErrs, outputToks) of
+        (errs@(_ : _), _) -> Left errs
+        ([], [_eof]) -> Right outputExpr
+        ([], _) -> Left [] -- tokens are not fully parsed; return empty error list, but still error
 
 declaration :: MaybeT Planter SomeStmt
 declaration =

@@ -23,7 +23,6 @@ checkArgs _ = do
   putStrLn "Usage: hlox [script]"
   exitWith $ ExitFailure 64
 
--- TODO: support interpreting just exprs
 startShell :: IO ()
 startShell = go 0 $ defaultInterpreter $ Locals Map.empty
  where
@@ -51,8 +50,17 @@ startShell = go 0 $ defaultInterpreter $ Locals Map.empty
                 Left _ -> return interpreter
                 Right interpreter' -> return interpreter'
         Left parseErrs -> do
-          toStderr parseErrs
-          return interpreter
+          case expressionWrapper tokens of
+            Left _ -> do
+              toStderr parseErrs
+              return interpreter
+            Right expression -> do
+              afterRunExpr <- runExpr interpreter expression
+              case afterRunExpr of
+                Left _ -> return interpreter
+                Right (value, newInterpreter) -> do
+                  print value
+                  return newInterpreter
       else toStderr scanErrs >> return interpreter
 
 -- | Runs a Lox file
